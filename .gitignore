@@ -194,7 +194,9 @@ cython_debug/
 /projections
 
 scripts/*
-
 !scripts/valid*
 
 /stats*
+
+dataset/*
+!dataset/ETT-small/*
