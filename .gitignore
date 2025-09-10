@@ -199,4 +199,4 @@ scripts/*
 /stats*
 
 dataset/*
-!dataset/ETT-small/*
+!dataset/ETT-small/**
