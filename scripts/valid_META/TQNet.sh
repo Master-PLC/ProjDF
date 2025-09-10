@@ -1446,6 +1446,7 @@ done
 done
 done
 done
+done
 
 
 
@@ -1611,6 +1612,7 @@ for pl in ${pl_list[@]}; do
 
         sleep 5
     } 2>&1 | tee -a "${OUTPUT_DIR}/stdout.log" &
+done
 done
 done
 done
