@@ -192,3 +192,7 @@ cython_debug/
 /foo*
 
 /projections
+
+scripts/*
+
+!scripts/valid*
