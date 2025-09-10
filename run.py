@@ -125,6 +125,7 @@ if __name__ == '__main__':
     parser.add_argument('--rec_lambda', type=float, default=0., help='weight of reconstruction function')
     parser.add_argument('--auxi_lambda', type=float, default=1, help='weight of auxilary function')
     parser.add_argument('--reg_lambda', type=float, default=0.0001, help='weight of auxilary function')
+    parser.add_argument('--decorr_lambda', type=float, default=0., help='weight of decorrelation function')
     parser.add_argument('--auxi_loss', type=str, default='MAE', help='loss function')
     parser.add_argument('--auxi_mode', type=str, default='fft', help='auxi loss mode, options: [fft, rfft]')
     parser.add_argument('--auxi_type', type=str, default='complex', help='auxi loss type, options: [complex, mag, phase, mag-phase]')
@@ -198,6 +199,7 @@ if __name__ == '__main__':
     parser.add_argument('--numItermax', type=int, default=10000, help="max number of iterations in Sinkhorn")
     parser.add_argument('--stopThr', type=float, default=1e-4, help="stop threshold in Sinkhorn")
     parser.add_argument('--mask_factor', type=float, default=0.01, help="mask factor for mask matrix")
+    parser.add_argument('--var_weight', type=float, default=1.0, help="variance weight", action=EvalAction)
 
     # SimpleTM
     parser.add_argument('--l1_weight', type=float, default=5e-5, help='Weight of L1 loss')
@@ -235,6 +237,7 @@ if __name__ == '__main__':
     parser.add_argument('--overlap_ratio', type=float, default=0.15, help='overlap ratio between tasks')
     parser.add_argument('--meta_optim_type', type=str, default='sgd', help='optimizer type')
     parser.add_argument('--max_norm', type=float, default=1.0, help='max norm for gradient clipping')
+    parser.add_argument('--first_order', type=int, default=1, help='first order approximation; True 1 False 0')
 
     # CycleNet
     parser.add_argument('--cycle', type=int, default=24, help='cycle length')
@@ -249,6 +252,13 @@ if __name__ == '__main__':
     parser.add_argument('--kernel_list', action=EvalAction, default=[3, 7, 9], help='kernel size list')
     parser.add_argument('--patch_len_list', action=EvalAction, default=[16], help='patch high list')
     parser.add_argument('--stride_list', action=EvalAction, default=None, help='stride')
+
+    # TimeBridge
+    parser.add_argument('--ia_layers', type=int, default=1, help='num of integrated attention layers')
+    parser.add_argument('--pd_layers', type=int, default=1, help='num of patch downsampled layers')
+    parser.add_argument('--ca_layers', type=int, default=0, help='num of cointegrated attention layers')
+    parser.add_argument('--stable_len', type=int, default=6, help='length of moving average in patch norm')
+    parser.add_argument('--num_p', type=int, default=None, help='num of down sampled patches')
 
     args = parser.parse_args()
 

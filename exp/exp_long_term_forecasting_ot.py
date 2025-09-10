@@ -7,11 +7,8 @@ from itertools import cycle
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.profiler as profiler
 import yaml
-from data_provider.data_factory import data_provider
 from exp.exp_basic import Exp_Basic
-from torch import optim
 from torch.utils.data import DataLoader
 from utils.fft_ot import cal_wasserstein
 from utils.metrics import metric
@@ -28,43 +25,14 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
         self.pred_len = args.pred_len
         self.label_len = args.label_len
 
-    def _build_model(self):
-        model = self.model_dict[self.args.model].Model(self.args).float()
-
-        pretrain_model_path = self.args.pretrain_model_path
-        if pretrain_model_path and os.path.exists(pretrain_model_path):
-            print(f'Loading pretrained model from {pretrain_model_path}')
-            state_dict = torch.load(pretrain_model_path)
-            model.load_state_dict(state_dict, strict=False)
-
-        if self.args.use_multi_gpu and self.args.use_gpu:
-            model = nn.DataParallel(model, device_ids=self.args.device_ids)
-        return model
-
-    def _get_data(self, flag):
-        data_set, data_loader = data_provider(self.args, flag)
-        return data_set, data_loader
-
-    def _select_optimizer(self, lr=None):
-        if self.args.optim_type == 'adam':
-            optim_class = optim.Adam
-        elif self.args.optim_type == 'adamw':
-            optim_class = optim.AdamW
-        model_optim = optim_class(self.model.parameters(), lr=self.args.learning_rate if lr is None else lr)
-        return model_optim
-
-    def _select_criterion(self):
-        criterion = nn.MSELoss()
-        return criterion
-
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
         self.model.eval()
 
         eval_time = time.time()
         with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(vali_loader):
-                _, outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark)
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(vali_loader):
+                outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
 
                 pred = outputs.detach()
                 true = batch_y.detach()
@@ -79,38 +47,10 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
         self.model.train()
         return total_loss
 
-    def forward_step(self, batch_x, batch_y, batch_x_mark, batch_y_mark):
-        batch_x = batch_x.float().to(self.device)
-        batch_y = batch_y.float().to(self.device)
-
-        if ('PEMS' in self.args.data or 'SRU' in self.args.data) and self.args.model not in ['TiDE']:
-            batch_x_mark = None
-            batch_y_mark = None
-        else:
-            batch_x_mark = batch_x_mark.float().to(self.device)
-            batch_y_mark = batch_y_mark.float().to(self.device)
-
-        # decoder input
-        dec_inp = torch.zeros_like(batch_y[:, -self.pred_len:, :]).float()
-        dec_inp = torch.cat([batch_y[:, :self.label_len, :], dec_inp], dim=1).float().to(self.device)
-
-        # encoder - decoder
-        if self.args.output_attention:
-            outputs, attn = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
-        else:
-            # outputs shape: [B, P, D]
-            outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
-            attn = None
-
-        f_dim = -1 if self.args.features == 'MS' else 0
-        outputs = outputs[:, -self.pred_len:, f_dim:]
-        batch_y = batch_y[:, -self.pred_len:, f_dim:]
-        return batch_x, outputs, batch_y, attn
-
     def train(self, setting, prof=None):
         train_data, train_loader = self._get_data(flag='train')
         auxi_loader = DataLoader(
-            train_data, batch_size=self.args.auxi_batch_size, shuffle=True, 
+            train_data, batch_size=self.args.auxi_batch_size - self.args.batch_size, shuffle=True, 
             num_workers=self.args.num_workers, drop_last=True
         )
         auxi_train_loader = cycle(auxi_loader)  # cycle the auxiliary loader
@@ -129,9 +69,7 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 
         model_optim = self._select_optimizer()
-        auxi_optim = self._select_optimizer(lr=self.args.inner_lr)
         scheduler = Scheduler(model_optim, self.args, train_steps)
-        auxi_scheduler = Scheduler(auxi_optim, self.args, train_steps)
         criterion = self._select_criterion()
 
         for epoch in range(self.args.train_epochs):
@@ -141,63 +79,65 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
 
             first_train_loss = []
             second_train_loss = []
+            train_loss = []
 
             lr_cur = scheduler.get_lr()
             self.writer.add_scalar(f'{self.pred_len}/train/lr', lr_cur, self.epoch)
 
             self.model.train()
             epoch_time = time.time()
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(train_loader):
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(train_loader):
                 self.step += 1
                 iter_count += 1
 
                 model_optim.zero_grad()
-                _, outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark)
+                outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
+
                 loss = criterion(outputs, batch_y)
                 if self.step % self.log_step == 0:
-                    self.writer.add_scalar(f'{self.pred_len}/first_train/loss_iter', loss, self.step)
-                loss.backward()
-                model_optim.step()
+                    self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', loss.item(), self.step)
                 first_train_loss.append(loss.item())
 
                 auxi_batch_x, auxi_batch_y, auxi_batch_x_mark, auxi_batch_y_mark = next(auxi_train_loader)
-                auxi_optim.zero_grad()
-                auxi_batch_x, outputs, batch_y, _ = self.forward_step(auxi_batch_x, auxi_batch_y, auxi_batch_x_mark, auxi_batch_y_mark)
+
+                auxi_batch_x = torch.concat([batch_x, auxi_batch_x.to(batch_x.device)], dim=0)
+                auxi_batch_y = torch.concat([batch_y, auxi_batch_y.to(batch_y.device)], dim=0)
+                auxi_batch_x_mark = torch.concat([batch_x_mark, auxi_batch_x_mark.to(batch_x_mark.device)], dim=0)
+                auxi_batch_y_mark = torch.concat([batch_y_mark, auxi_batch_y_mark.to(batch_y_mark.device)], dim=0)
+
+                outputs, batch_y, _ = self.forward_step(auxi_batch_x, auxi_batch_y, auxi_batch_x_mark, auxi_batch_y_mark)
 
                 if self.args.joint_forecast:  # joint distribution forecasting
-                    outputs = torch.concat((auxi_batch_x, outputs), dim=1)  # [B, S+P, D]
-                    batch_y = torch.concat((auxi_batch_x, batch_y), dim=1)  # [B, S+P, D]
+                    outputs = torch.concat((auxi_batch_x.to(outputs.device), outputs), dim=1)  # [B, S+P, D]
+                    batch_y = torch.concat((auxi_batch_x.to(batch_y.device), batch_y), dim=1)  # [B, S+P, D]
 
                 loss_auxi = cal_wasserstein(
                     outputs, batch_y, self.args.distance, ot_type=self.args.ot_type, normalize=self.args.normalize, 
-                    mask_factor=self.args.mask_factor, reg_sk=self.args.reg_sk, stopThr=self.args.stopThr, numItermax=self.args.numItermax
+                    mask_factor=self.args.mask_factor, reg_sk=self.args.reg_sk, stopThr=self.args.stopThr, numItermax=self.args.numItermax, var_weight=self.args.var_weight
                 )
-
-                if self.args.auxi_loss == "MAE":
-                    # MAE, 最小化element-wise error的模长
-                    loss_auxi = loss_auxi.abs().mean() if self.args.module_first else loss_auxi.mean().abs()  # check the dim of fft
-                elif self.args.auxi_loss == "MSE":
-                    # MSE, 最小化element-wise error的模长
-                    loss_auxi = (loss_auxi.abs()**2).mean() if self.args.module_first else (loss_auxi**2).mean().abs()
-                elif self.args.auxi_loss in ["None", "none"]:
-                    pass
-                else:
-                    raise NotImplementedError
-
                 if self.step % self.log_step == 0:
-                    self.writer.add_scalar(f'{self.pred_len}/second_train/loss_iter', loss_auxi, self.step)
+                    self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', loss_auxi.item(), self.step)
+                second_train_loss.append(loss_auxi.item())
 
                 if torch.isnan(loss_auxi) or torch.isinf(loss_auxi):
                     print(f"Loss is NaN or Inf in second train, skipping epoch {self.epoch} step {self.step}")
                     has_nan_in_epoch = True
                     continue
 
-                loss_auxi.backward()
-                auxi_optim.step()
-                second_train_loss.append(loss_auxi.item())
+                loss += self.args.auxi_lambda * loss_auxi
+                if self.step % self.log_step == 0:
+                    self.writer.add_scalar(f'{self.pred_len}/train/loss_iter', loss.item(), self.step)
+                train_loss.append(loss.item())
+
+                loss.backward()
+                model_optim.step()
 
                 if (i + 1) % 100 == 0:
-                    print("\titers: {}, epoch: {} | 1st loss: {:.7f}, 2nd loss: {:.7f}".format(i + 1, self.epoch, loss.item(), loss_auxi.item()))
+                    print(
+                        "\titers: {}, epoch: {} | loss_rec: {:.7f}, loss_auxi: {:.7f}, loss: {:.7f}".format(
+                            i + 1, self.epoch, first_train_loss[-1], second_train_loss[-1], loss.item()
+                        )
+                    )
                     cost_time = time.time() - time_now
                     speed = cost_time / iter_count
                     left_time = speed * ((self.args.train_epochs - epoch) * train_steps - i)
@@ -208,7 +148,6 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
 
                 if self.args.lradj in ['TST']:
                     scheduler.step(verbose=(i + 1 == train_steps))
-                    auxi_scheduler.step(verbose=(i + 1 == train_steps))
 
             if model_state_last_effective is not None and has_nan_in_epoch:
                 self.model.load_state_dict(model_state_last_effective)
@@ -216,10 +155,12 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
             print("Epoch: {} cost time: {}".format(self.epoch, time.time() - epoch_time))
             first_train_loss = np.average(first_train_loss)
             second_train_loss = np.average(second_train_loss)
+            train_loss = np.average(train_loss)
             vali_loss = self.vali(vali_data, vali_loader, criterion)
 
-            self.writer.add_scalar(f'{self.pred_len}/first_train/loss', first_train_loss, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/second_train/loss', second_train_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', first_train_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', second_train_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss', train_loss, self.epoch)
             self.writer.add_scalar(f'{self.pred_len}/vali/loss', vali_loss, self.epoch)
 
             print(
@@ -234,7 +175,6 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
 
             if self.args.lradj not in ['TST']:
                 scheduler.step(vali_loss, self.epoch)
-                auxi_scheduler.step(vali_loss, self.epoch)
 
         best_model_path = os.path.join(path, 'checkpoint.pth')
         self.model.load_state_dict(torch.load(best_model_path))
@@ -255,8 +195,8 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
         self.model.eval()
         # metric_collector = create_metric_collector(device=self.device)
         with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(test_loader):
-                _, outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark)
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(test_loader):
+                outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
 
                 batch_x = batch_x.detach()
                 outputs = outputs.detach()
@@ -330,9 +270,10 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
             np.save(os.path.join(res_path, 'pred.npy'), preds.cpu().numpy())
             np.save(os.path.join(res_path, 'true.npy'), trues.cpu().numpy())
 
-        print('save configs')
-        args_dict = vars(self.args)
-        with open(os.path.join(res_path, 'config.yaml'), 'w') as yaml_file:
-            yaml.dump(args_dict, yaml_file, default_flow_style=False)
+        if not test or not os.path.exists(os.path.join(res_path, 'config.yaml')):
+            print('save configs')
+            args_dict = vars(self.args)
+            with open(os.path.join(res_path, 'config.yaml'), 'w') as yaml_file:
+                yaml.dump(args_dict, yaml_file, default_flow_style=False)
 
         return

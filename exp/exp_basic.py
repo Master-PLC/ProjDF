@@ -2,7 +2,10 @@ import os
 import shutil
 
 import torch
-from models import MODEL_DICT
+import torch.nn as nn
+import torch.optim as optim
+from data_provider.data_factory import data_provider
+from models import MODEL_DICT, MODEL_REQUIRES_CYCLE
 from torch.utils.tensorboard import SummaryWriter
 from utils.tools import pv
 
@@ -24,7 +27,17 @@ class Exp_Basic(object):
         self.output_vis = args.output_vis
 
     def _build_model(self):
-        raise NotImplementedError
+        model = self.model_dict[self.args.model].Model(self.args).float()
+
+        pretrain_model_path = self.args.pretrain_model_path
+        if pretrain_model_path and os.path.exists(pretrain_model_path):
+            print(f'Loading pretrained model from {pretrain_model_path}')
+            state_dict = torch.load(pretrain_model_path)
+            model.load_state_dict(state_dict, strict=False)
+
+        if self.args.use_multi_gpu and self.args.use_gpu:
+            model = nn.DataParallel(model, device_ids=self.args.device_ids)
+        return model
 
     def _acquire_device(self):
         if self.args.use_gpu:
@@ -51,8 +64,55 @@ class Exp_Basic(object):
 
         return SummaryWriter(log_dir)
 
-    def _get_data(self):
-        pass
+    def _get_data(self, flag):
+        data_set, data_loader = data_provider(self.args, flag)
+        return data_set, data_loader
+
+    def _select_optimizer(self, model=None, lr=None, optim_type=None):
+        if model is None:
+            model = self.model
+        if lr is None:
+            lr = self.args.learning_rate
+        if optim_type is None:
+            optim_type = self.args.optim_type
+        if optim_type == 'adam':
+            optim_class = optim.Adam
+        elif optim_type == 'adamw':
+            optim_class = optim.AdamW
+        elif optim_type == 'sgd':
+            optim_class = optim.SGD
+        model_optim = optim_class(model.parameters(), lr=lr)
+        return model_optim
+
+    def _select_criterion(self):
+        criterion = nn.MSELoss()
+        return criterion
+
+    def forward_step(self, batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle):
+        batch_x = batch_x.float().to(self.device)
+        batch_y = batch_y.float().to(self.device)
+
+        if ('PEMS' in self.args.data or 'SRU' in self.args.data) and self.args.model not in ['TiDE']:
+            batch_x_mark = None
+            batch_y_mark = None
+        else:
+            batch_x_mark = batch_x_mark.float().to(self.device)
+            batch_y_mark = batch_y_mark.float().to(self.device)
+
+        # decoder input
+        dec_inp = torch.zeros_like(batch_y[:, -self.pred_len:, :]).float()
+        dec_inp = torch.cat([batch_y[:, :self.label_len, :], dec_inp], dim=1).float().to(self.device)
+
+        # encoder - decoder
+        model_args = [batch_x, batch_x_mark, dec_inp, batch_y_mark]
+        if self.args.model in MODEL_REQUIRES_CYCLE:
+            model_args.append(batch_cycle)
+        outputs, attn = self.model(*model_args) if self.args.output_attention else self.model(*model_args), None
+
+        f_dim = -1 if self.args.features == 'MS' else 0
+        outputs = outputs[:, -self.pred_len:, f_dim:]
+        batch_y = batch_y[:, -self.pred_len:, f_dim:]
+        return outputs, batch_y, attn
 
     def vali(self):
         pass

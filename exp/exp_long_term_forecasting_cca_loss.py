@@ -7,13 +7,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 import yaml
-from data_provider.data_factory import data_provider
 from exp.exp_basic import Exp_Basic
-from torch import optim
-from utils.cca_loss import cca_loss
+from models import MODEL_REQUIRES_CYCLE
+from utils.cca_loss import cca_loss, channel_decorrelation_loss
 from utils.metrics import metric
 from utils.metrics_torch import create_metric_collector, metric_torch
-from utils.tools import EarlyStopping, Scheduler, adjust_learning_rate, disable_grad, enable_grad, log_heatmap, visual
+from utils.tools import EarlyStopping, Scheduler, disable_grad, enable_grad, log_heatmap, visual
 
 warnings.filterwarnings('ignore')
 
@@ -54,26 +53,14 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
             model = nn.DataParallel(model, device_ids=args.device_ids)
         return model
 
-    def _get_data(self, flag):
-        data_set, data_loader = data_provider(self.args, flag)
-        return data_set, data_loader
-
-    def _select_optimizer(self):
-        model_optim = optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
-        return model_optim
-
-    def _select_criterion(self):
-        criterion = nn.MSELoss()
-        return criterion
-
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
         self.model.eval()
 
         eval_time = time.time()
         with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(vali_loader):
-                predictions, outputs, batch_x, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark)
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(vali_loader):
+                _, outputs, _, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
 
                 pred = outputs.detach()
                 true = batch_y.detach()
@@ -88,15 +75,14 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
         self.model.train()
         return total_loss
 
-    def forward_step(self, batch_x, batch_y, batch_x_mark, batch_y_mark):
+    def forward_step(self, batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle):
         batch_x = batch_x.float().to(self.device)
-        if self.projection_learning:
-            if self.args.proj_init == 'cca' and self.args.pre_norm:
-                batch_x = (batch_x - self.means[0]) / self.stds[0]  # [B, S, D]
-            if self.args.proj_init in ['linear', 'mlp']:
-                batch_x = self.x_proj(batch_x)
-            else:
-                batch_x = torch.matmul(batch_x, self.x_proj)  # [B, S, D] -> [B, S, rank]
+        if self.args.proj_init == 'cca' and self.args.pre_norm:
+            batch_x = (batch_x - self.means[0]) / self.stds[0]  # [B, S, D]
+        if self.args.proj_init in ['linear', 'mlp']:
+            batch_x = self.x_proj(batch_x)
+        else:
+            batch_x = torch.matmul(batch_x, self.x_proj)  # [B, S, D] -> [B, S, rank]
         batch_y = batch_y.float().to(self.device)
 
         if ('PEMS' in self.args.data or 'SRU' in self.args.data) and self.args.model not in ['TiDE']:
@@ -111,27 +97,24 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
         dec_inp = torch.cat([batch_y[:, :self.label_len, :], dec_inp], dim=1).float().to(self.device)
 
         # encoder - decoder
-        if self.args.output_attention:
-            outputs, attn = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
-        else:
-            # outputs shape: [B, P, D]
-            outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
-            attn = None
+        model_args = [batch_x, batch_x_mark, dec_inp, batch_y_mark]
+        if self.args.model in MODEL_REQUIRES_CYCLE:
+            model_args.append(batch_cycle)
+        outputs, attn = self.model(*model_args) if self.args.output_attention else self.model(*model_args), None
 
         f_dim = -1 if self.args.features == 'MS' else 0
         predictions = outputs = outputs[:, -self.pred_len:, f_dim:]
-        if self.projection_learning:
-            if self.args.proj_init in ['linear', 'mlp']:
-                outputs = self.y_proj(outputs)  # [B, P, rank] -> [B, P, D]
-            else:
-                outputs = torch.matmul(outputs, self.y_proj)
-            if self.args.proj_init == 'cca' and self.args.pre_norm:
-                outputs = outputs * self.stds[1] + self.means[1]  # inverse transform outputs, mul std and add mean
+        if self.args.proj_init in ['linear', 'mlp']:
+            outputs = self.y_proj(outputs)  # [B, P, rank] -> [B, P, D]
+        else:
+            outputs = torch.matmul(outputs, self.y_proj)
+        if self.args.proj_init == 'cca' and self.args.pre_norm:
+            outputs = outputs * self.stds[1] + self.means[1]  # inverse transform outputs, mul std and add mean
         batch_y = batch_y[:, -self.pred_len:, f_dim:]
         return predictions, outputs, batch_x, batch_y, attn
 
-    def train(self, setting):
-        train_data, train_loader = self._get_data(flag='train')
+    def initialize_projections(self, train_data):
+        self.projection_learning = False
 
         if self.args.proj_init == 'identity':
             x_proj = torch.eye(self.args.enc_in, self.proj_dim, dtype=torch.float32).to(self.device)
@@ -177,6 +160,23 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
             self.x_proj = nn.Parameter(x_proj, requires_grad=False)
             self.y_proj = nn.Parameter(y_proj, requires_grad=False)
 
+        if self.args.proj_init in ['linear', 'mlp']:
+            proj_params = list(self.x_proj.parameters()) + list(self.y_proj.parameters())
+        else:
+            proj_params = [self.x_proj, self.y_proj]
+        return proj_params
+
+    def check_projection_learning(self):
+        if self.args.fixed_step and self.step > self.args.fixed_step and not self.projection_learning:
+            if self.args.learn_x_proj:
+                enable_grad(self.x_proj)
+            if self.args.learn_y_proj:
+                enable_grad(self.y_proj)
+            print(f"\n>>>>>>>Projection learning enabled at step {self.step}, epoch {self.epoch}\n")
+            self.projection_learning = True
+
+    def train(self, setting):
+        train_data, train_loader = self._get_data(flag='train')
         vali_data, vali_loader = self._get_data(flag='val')
 
         path = os.path.join(self.args.checkpoints, setting)
@@ -191,27 +191,15 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 
         model_optim = self._select_optimizer()
-        if self.args.proj_init in ['linear', 'mlp']:
-            proj_params = list(self.x_proj.parameters()) + list(self.y_proj.parameters())
-        else:
-            proj_params = [self.x_proj, self.y_proj]
+        proj_params = self.initialize_projections(train_data)
         model_optim.add_param_group({'params': proj_params, 'lr': self.args.inner_lr})
         scheduler = Scheduler(model_optim, self.args, train_steps)
         criterion = self._select_criterion()
 
-        self.projection_learning = False
         for epoch in range(self.args.train_epochs):
             self.epoch = epoch + 1
             iter_count = 0
             train_loss = []
-
-            if self.args.fixed_epoch and self.epoch > self.args.fixed_epoch and not self.projection_learning:
-                if self.args.learn_x_proj:
-                    enable_grad(self.x_proj)
-                if self.args.learn_y_proj:
-                    enable_grad(self.y_proj)
-                print(f"\n>>>>>>>Projection learning enabled at epoch {self.epoch}, step {self.step}\n")
-                self.projection_learning = True
 
             lr_cur = scheduler.get_lr()
             if isinstance(lr_cur, list):
@@ -222,21 +210,13 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
 
             self.model.train()
             epoch_time = time.time()
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(train_loader):
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(train_loader):
                 self.step += 1
                 iter_count += 1
 
-                if self.args.fixed_step and self.step > self.args.fixed_step and not self.projection_learning:
-                    if self.args.learn_x_proj:
-                        enable_grad(self.x_proj)
-                    if self.args.learn_y_proj:
-                        enable_grad(self.y_proj)
-                    print(f"\n>>>>>>>Projection learning enabled at step {self.step}, epoch {self.epoch}\n")
-                    self.projection_learning = True
-
+                self.check_projection_learning()
                 model_optim.zero_grad()
-
-                predictions, outputs, batch_x, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark)
+                predictions, outputs, batch_x, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
 
                 loss = 0
                 if self.args.rec_lambda:
@@ -247,36 +227,22 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
                         loss += loss_rec
                     self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', loss_rec, self.step)
 
-                if self.args.auxi_lambda:
+                if self.args.auxi_lambda and self.args.auxi_mode == "cca" and self.projection_learning:
                     if self.args.joint_forecast:  # joint distribution forecasting
-                        outputs = torch.concat((batch_x, outputs), dim=1)  # [B, S+P, D]
-                        batch_y = torch.concat((batch_x, batch_y), dim=1)  # [B, S+P, D]
+                        outputs = torch.concat((batch_x.to(outputs.device), outputs), dim=1)  # [B, S+P, D]
+                        batch_y = torch.concat((batch_x.to(batch_y.device), batch_y), dim=1)  # [B, S+P, D]
 
-                    if self.args.auxi_mode == "cca":
-                        if self.projection_learning:
-                            loss_auxi = cca_loss(
-                                batch_x, predictions, align_type=int(self.args.auxi_type), rank_ratio=self.args.rank_ratio, 
-                                device=self.device, r1=self.args.reg_cca, r2=self.args.reg_cca, eps=self.args.eps, loss_type=self.args.cca_type
-                            )
-                        else:
-                            loss_auxi = 0
-
-                    else:
-                        raise NotImplementedError
-
-                    if self.args.auxi_loss == "MAE":
-                        # MAE, 最小化element-wise error的模长
-                        loss_auxi = loss_auxi.abs().mean() if self.args.module_first else loss_auxi.mean().abs()  # check the dim of fft
-                    elif self.args.auxi_loss == "MSE":
-                        # MSE, 最小化element-wise error的模长
-                        loss_auxi = (loss_auxi.abs()**2).mean() if self.args.module_first else (loss_auxi**2).mean().abs()
-                    elif self.args.auxi_loss in ["None", "none"]:
-                        pass
-                    else:
-                        raise NotImplementedError
-
+                    loss_auxi = cca_loss(
+                        batch_x, predictions, align_type=int(self.args.auxi_type), rank_ratio=self.args.rank_ratio, 
+                        device=self.device, r1=self.args.reg_cca, r2=self.args.reg_cca, eps=self.args.eps, loss_type=self.args.cca_type
+                    )
                     loss += self.args.auxi_lambda * loss_auxi
                     self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', loss_auxi, self.step)
+
+                if self.args.decorr_lambda and self.projection_learning:
+                    loss_decorr = channel_decorrelation_loss(batch_x, p=1) + channel_decorrelation_loss(predictions, p=1)
+                    loss += self.args.decorr_lambda * loss_decorr
+                    self.writer.add_scalar(f'{self.pred_len}/train/loss_decorr', loss_decorr, self.step)
 
                 if self.args.reg_lambda and self.projection_learning:
                     if self.args.cca_type == 'cosine':
@@ -343,7 +309,9 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
             if self.args.proj_init == 'cca' and self.args.pre_norm:
                 other_to_save['means'] = self.means
                 other_to_save['stds'] = self.stds
-            early_stopping(vali_loss, self.model, path, **other_to_save)
+            improved = early_stopping(vali_loss, self.model, path, **other_to_save)
+            self.args.learned_from_method = True if improved and self.projection_learning else False
+
             if early_stopping.early_stop:
                 print("Early stopping")
                 break
@@ -381,8 +349,8 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
         self.model.eval()
         # metric_collector = create_metric_collector(device=self.device)
         with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(test_loader):
-                _, outputs, _, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark)
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(test_loader):
+                _, outputs, _, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
 
                 batch_x = batch_x.detach()
                 outputs = outputs.detach()
@@ -453,9 +421,10 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
             np.save(os.path.join(res_path, 'pred.npy'), preds.cpu().numpy())
             np.save(os.path.join(res_path, 'true.npy'), trues.cpu().numpy())
 
-        print('save configs')
-        args_dict = vars(self.args)
-        with open(os.path.join(res_path, 'config.yaml'), 'w') as yaml_file:
-            yaml.dump(args_dict, yaml_file, default_flow_style=False)
+        if not test or not os.path.exists(os.path.join(res_path, 'config.yaml')):
+            print('save configs')
+            args_dict = vars(self.args)
+            with open(os.path.join(res_path, 'config.yaml'), 'w') as yaml_file:
+                yaml.dump(args_dict, yaml_file, default_flow_style=False)
 
         return

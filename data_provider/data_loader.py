@@ -24,7 +24,7 @@ class Dataset_ETT_hour(Dataset):
         self, root_path, flag='train', size=None, features='S', data_path='ETTh1.csv',
         target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
-        noise_type='sin', data_percentage=1., **kwargs
+        noise_type='sin', data_percentage=1., cycle=None, **kwargs
     ):
         # size [seq_len, label_len, pred_len]
         # info
@@ -47,81 +47,11 @@ class Dataset_ETT_hour(Dataset):
         self.timeenc = timeenc
         self.freq = freq
         self.add_noise = add_noise
+        self.cycle = cycle
 
         self.root_path = root_path
         self.data_path = data_path
         self.__read_data__()
-
-    def __read_data__(self):
-        self.scaler = StandardScaler()
-        df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
-
-        border1s = [0, 12 * 30 * 24 - self.seq_len, 12 * 30 * 24 + 4 * 30 * 24 - self.seq_len]
-        border2s = [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24]
-        border1 = border1s[self.set_type]
-        border2 = border2s[self.set_type]
-
-        if self.features == 'M' or self.features == 'MS':
-            cols_data = df_raw.columns[1:]
-            df_data = df_raw[cols_data]
-        elif self.features == 'S':
-            df_data = df_raw[[self.target]]
-
-        if self.scale:
-            train_data = df_data[border1s[0]:border2s[0]]
-            self.scaler.fit(train_data.values)
-            data = self.scaler.transform(df_data.values)
-        else:
-            data = df_data.values
-
-        df_stamp = df_raw[['date']][border1:border2]
-        df_stamp['date'] = pd.to_datetime(df_stamp.date)
-        if self.timeenc == 0:
-            df_stamp['month'] = df_stamp.date.apply(lambda row: row.month, 1)
-            df_stamp['day'] = df_stamp.date.apply(lambda row: row.day, 1)
-            df_stamp['weekday'] = df_stamp.date.apply(lambda row: row.weekday(), 1)
-            df_stamp['hour'] = df_stamp.date.apply(lambda row: row.hour, 1)
-            data_stamp = df_stamp.drop(['date'], 1).values
-        elif self.timeenc == 1:
-            data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
-            data_stamp = data_stamp.transpose(1, 0)
-
-        self.data_x = data[border1:border2]
-        self.data_y = data[border1:border2]
-        self.data_stamp = data_stamp
-
-    def __getitem__(self, index):
-        s_begin = index
-        s_end = s_begin + self.seq_len
-        r_begin = s_end - self.label_len
-        r_end = s_end + self.pred_len
-
-        seq_x = self.data_x[s_begin:s_end]
-        seq_y = self.data_y[r_begin:r_end]
-        seq_x_mark = self.data_stamp[s_begin:s_end]
-        seq_y_mark = self.data_stamp[r_begin:r_end]
-
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
-
-    def __len__(self):
-        return len(self.data_x) - self.seq_len - self.pred_len + 1
-
-    def inverse_transform(self, data):
-        return self.scaler.inverse_transform(data)
-
-
-class Dataset_ETT_hour_Cycle(Dataset_ETT_hour):
-    def __init__(
-        self, root_path, flag='train', size=None, features='S', data_path='ETTh1.csv',
-        target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
-        add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
-        noise_type='sin', data_percentage=1., num_freqs=16, cycle=None, **kwargs
-    ):
-        self.cycle = cycle
-        super().__init__(
-            root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, **kwargs
-        )
 
     def __read_data__(self):
         self.scaler = StandardScaler()
@@ -178,70 +108,11 @@ class Dataset_ETT_hour_Cycle(Dataset_ETT_hour):
 
         return seq_x, seq_y, seq_x_mark, seq_y_mark, cycle_index
 
+    def __len__(self):
+        return len(self.data_x) - self.seq_len - self.pred_len + 1
 
-class Dataset_ETT_hour_CCA_Cycle(Dataset_ETT_hour_Cycle):
-    def __init__(
-        self, root_path, flag='train', size=None, features='S', data_path='ETTh1.csv',
-        target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
-        add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
-        noise_type='sin', data_percentage=1., num_freqs=16, cycle=None, rank_ratio=1.0, 
-        pca_dim="all", reinit=0, speedup_sklearn=0, align_type=0, load_from_disk="", **kwargs
-    ):
-        super().__init__(
-            root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, cycle=cycle, **kwargs
-        )
-        self.align_type = align_type
-        self.speedup_sklearn = speedup_sklearn
-        self.load_from_disk = load_from_disk
-        self.cca_fit(rank_ratio, pca_dim, reinit)
-
-    def cca_fit(self, rank_ratio=1.0, pca_dim="D", reinit=0):
-        if self.set_type != 0:
-            self.Wx = None
-            self.Wy = None
-            return
-
-        print("Fitting CCA ...")
-        if self.load_from_disk and os.path.exists(os.path.join(self.load_from_disk, f'Wx_{self.align_type}.npy')):
-            self.Wx = np.load(os.path.join(self.load_from_disk, f'Wx_{self.align_type}.npy'))
-            self.Wy = np.load(os.path.join(self.load_from_disk, f'Wy_{self.align_type}.npy'))
-            self.means = np.load(os.path.join(self.load_from_disk, f'means_{self.align_type}.npy'))
-            self.stds = np.load(os.path.join(self.load_from_disk, f'stds_{self.align_type}.npy'))
-        else:
-            if self.align_type != 5:
-                input_seq, label_seq = [], []
-                for i in range(self.__len__()):
-                    inp, label, _, _ = self.__getitem__(i)
-                    input_seq.append(inp)
-                    label = label[-self.pred_len:]
-                    label_seq.append(label)
-                input_seq = np.array(input_seq)  # shape: [N, S, D]
-                label_seq = np.array(label_seq)  # shape: [N, P, D]
-            elif self.align_type == 5:
-                input_seq = self.data_x[:-self.pred_len]  # shape: [N, D]
-                label_seq = self.data_y[self.pred_len:]  # shape: [N, D]
-            self.Wx, self.Wy, self.means, self.stds = get_cca_projection(
-                input_seq, label_seq, 1.0, pca_dim, self.speedup_sklearn, self.align_type
-            )
-            np.save(os.path.join(self.load_from_disk, f'Wx_{self.align_type}.npy'), self.Wx)
-            np.save(os.path.join(self.load_from_disk, f'Wy_{self.align_type}.npy'), self.Wy)
-            np.save(os.path.join(self.load_from_disk, f'means_{self.align_type}.npy'), self.means)
-            np.save(os.path.join(self.load_from_disk, f'stds_{self.align_type}.npy'), self.stds)
-
-        if rank_ratio and rank_ratio <= 1.0:
-            full_rank = self.Wx.shape[1]
-            proj_dim = int(full_rank * rank_ratio)
-            self.Wx = self.Wx[:, :proj_dim]
-            self.Wy = self.Wy[:, :proj_dim]
-        elif rank_ratio < 0 or rank_ratio > 1:
-            proj_dim = int(abs(rank_ratio))
-            proj_dim = min(proj_dim, self.Wx.shape[1])
-            self.Wx = self.Wx[:, :proj_dim]
-            self.Wy = self.Wy[:, :proj_dim]
-
-        print(f"CCA Wx shape: {self.Wx.shape}")
-        print(f"CCA Wy shape: {self.Wy.shape}")
+    def inverse_transform(self, data):
+        return self.scaler.inverse_transform(data)
 
 
 class Dataset_ETT_hour_Fourier(Dataset_ETT_hour):
@@ -249,11 +120,11 @@ class Dataset_ETT_hour_Fourier(Dataset_ETT_hour):
         self, root_path, flag='train', size=None, features='S', data_path='ETTh1.csv',
         target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
-        noise_type='sin', data_percentage=1., num_freqs=16, **kwargs
+        noise_type='sin', data_percentage=1., num_freqs=16, cycle=None, **kwargs
     ):
         super().__init__(
             root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, **kwargs
+            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, cycle, **kwargs
         )
 
         self.fourier_fit(num_freqs)
@@ -275,13 +146,13 @@ class Dataset_ETT_hour_Trend(Dataset_ETT_hour):
         self, root_path, flag='train', size=None, features='S', data_path='ETTh1.csv',
         target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
-        noise_type='sin', data_percentage=1., trend_k=0.02, **kwargs
+        noise_type='sin', data_percentage=1., trend_k=0.02, cycle=None, **kwargs
     ):
         self.trend_k = trend_k
 
         super().__init__(
             root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, **kwargs
+            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, cycle, **kwargs
         )
 
     def __read_data__(self):
@@ -326,6 +197,9 @@ class Dataset_ETT_hour_Trend(Dataset_ETT_hour):
         self.data_y = data[border1:border2]
         self.data_stamp = data_stamp
 
+        # add cycle
+        self.cycle_index = (np.arange(len(data)) % self.cycle)[border1:border2]
+
 
 class Dataset_ETT_hour_PCA(Dataset_ETT_hour):
     def __init__(
@@ -333,11 +207,11 @@ class Dataset_ETT_hour_PCA(Dataset_ETT_hour):
         target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
         noise_type='sin', data_percentage=1., trend_k=0.02, rank_ratio=1.0, 
-        pca_dim="all", reinit=0, speedup_sklearn=0, **kwargs
+        pca_dim="all", reinit=0, speedup_sklearn=0, cycle=None, **kwargs
     ):
         super().__init__(
             root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, **kwargs
+            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, cycle, **kwargs
         )
 
         self.speedup_sklearn = speedup_sklearn
@@ -366,11 +240,11 @@ class Dataset_ETT_hour_CCA(Dataset_ETT_hour):
         target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
         noise_type='sin', data_percentage=1., trend_k=0.02, rank_ratio=1.0, 
-        pca_dim="all", reinit=0, speedup_sklearn=0, align_type=0, load_from_disk="", **kwargs
+        pca_dim="all", reinit=0, speedup_sklearn=0, align_type=0, load_from_disk="", cycle=None, **kwargs
     ):
         super().__init__(
             root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, **kwargs
+            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, cycle, **kwargs
         )
 
         self.align_type = align_type
@@ -431,7 +305,7 @@ class Dataset_ETT_minute(Dataset):
         self, root_path, flag='train', size=None, features='S', data_path='ETTm1.csv',
         target='OT', scale=True, timeenc=0, freq='t', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
-        noise_type='sin', data_percentage=1., **kwargs
+        noise_type='sin', data_percentage=1., cycle=None, **kwargs
     ):
         # size [seq_len, label_len, pred_len]
         # info
@@ -454,6 +328,7 @@ class Dataset_ETT_minute(Dataset):
         self.timeenc = timeenc
         self.freq = freq
         self.add_noise = add_noise
+        self.cycle = cycle
 
         self.root_path = root_path
         self.data_path = data_path
@@ -499,79 +374,6 @@ class Dataset_ETT_minute(Dataset):
         self.data_y = data[border1:border2]
         self.data_stamp = data_stamp
 
-    def __getitem__(self, index):
-        s_begin = index
-        s_end = s_begin + self.seq_len
-        r_begin = s_end - self.label_len
-        r_end = s_end + self.pred_len
-
-        seq_x = self.data_x[s_begin:s_end]
-        seq_y = self.data_y[r_begin:r_end]
-        seq_x_mark = self.data_stamp[s_begin:s_end]
-        seq_y_mark = self.data_stamp[r_begin:r_end]
-
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
-
-    def __len__(self):
-        return len(self.data_x) - self.seq_len - self.pred_len + 1
-
-    def inverse_transform(self, data):
-        return self.scaler.inverse_transform(data)
-
-
-class Dataset_ETT_minute_Cycle(Dataset_ETT_minute):
-    def __init__(
-        self, root_path, flag='train', size=None, features='S', data_path='ETTm1.csv',
-        target='OT', scale=True, timeenc=0, freq='t', seasonal_patterns=None, 
-        add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
-        noise_type='sin', data_percentage=1., num_freqs=16, cycle=None, **kwargs
-    ):
-        self.cycle = cycle
-        super().__init__(
-            root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, **kwargs
-        )
-
-    def __read_data__(self):
-        self.scaler = StandardScaler()
-        df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
-
-        border1s = [0, 12 * 30 * 24 * 4 - self.seq_len, 12 * 30 * 24 * 4 + 4 * 30 * 24 * 4 - self.seq_len]
-        border2s = [12 * 30 * 24 * 4, 12 * 30 * 24 * 4 + 4 * 30 * 24 * 4, 12 * 30 * 24 * 4 + 8 * 30 * 24 * 4]
-        border1 = border1s[self.set_type]
-        border2 = border2s[self.set_type]
-
-        if self.features == 'M' or self.features == 'MS':
-            cols_data = df_raw.columns[1:]
-            df_data = df_raw[cols_data]
-        elif self.features == 'S':
-            df_data = df_raw[[self.target]]
-
-        if self.scale:
-            train_data = df_data[border1s[0]:border2s[0]]
-            self.scaler.fit(train_data.values)
-            data = self.scaler.transform(df_data.values)
-        else:
-            data = df_data.values
-
-        df_stamp = df_raw[['date']][border1:border2]
-        df_stamp['date'] = pd.to_datetime(df_stamp.date)
-        if self.timeenc == 0:
-            df_stamp['month'] = df_stamp.date.apply(lambda row: row.month, 1)
-            df_stamp['day'] = df_stamp.date.apply(lambda row: row.day, 1)
-            df_stamp['weekday'] = df_stamp.date.apply(lambda row: row.weekday(), 1)
-            df_stamp['hour'] = df_stamp.date.apply(lambda row: row.hour, 1)
-            df_stamp['minute'] = df_stamp.date.apply(lambda row: row.minute, 1)
-            df_stamp['minute'] = df_stamp.minute.map(lambda x: x // 15)
-            data_stamp = df_stamp.drop(['date'], 1).values
-        elif self.timeenc == 1:
-            data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
-            data_stamp = data_stamp.transpose(1, 0)
-
-        self.data_x = data[border1:border2]
-        self.data_y = data[border1:border2]
-        self.data_stamp = data_stamp
-        
         # add cycle
         self.cycle_index = (np.arange(len(data)) % self.cycle)[border1:border2]
 
@@ -589,70 +391,11 @@ class Dataset_ETT_minute_Cycle(Dataset_ETT_minute):
 
         return seq_x, seq_y, seq_x_mark, seq_y_mark, cycle_index
 
+    def __len__(self):
+        return len(self.data_x) - self.seq_len - self.pred_len + 1
 
-class Dataset_ETT_minute_CCA_Cycle(Dataset_ETT_minute_Cycle):
-    def __init__(
-        self, root_path, flag='train', size=None, features='S', data_path='ETTm1.csv',
-        target='OT', scale=True, timeenc=0, freq='t', seasonal_patterns=None, 
-        add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
-        noise_type='sin', data_percentage=1., num_freqs=16, cycle=None, rank_ratio=1.0, 
-        pca_dim="all", reinit=0, speedup_sklearn=0, align_type=0, load_from_disk="", **kwargs
-    ):
-        super().__init__(
-            root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, cycle=cycle, **kwargs
-        )
-        self.align_type = align_type
-        self.speedup_sklearn = speedup_sklearn
-        self.load_from_disk = load_from_disk
-        self.cca_fit(rank_ratio, pca_dim, reinit)
-
-    def cca_fit(self, rank_ratio=1.0, pca_dim="D", reinit=0):
-        if self.set_type != 0:
-            self.Wx = None
-            self.Wy = None
-            return
-
-        print("Fitting CCA ...")
-        if self.load_from_disk and os.path.exists(os.path.join(self.load_from_disk, f'Wx_{self.align_type}.npy')):
-            self.Wx = np.load(os.path.join(self.load_from_disk, f'Wx_{self.align_type}.npy'))
-            self.Wy = np.load(os.path.join(self.load_from_disk, f'Wy_{self.align_type}.npy'))
-            self.means = np.load(os.path.join(self.load_from_disk, f'means_{self.align_type}.npy'))
-            self.stds = np.load(os.path.join(self.load_from_disk, f'stds_{self.align_type}.npy'))
-        else:
-            if self.align_type != 5:
-                input_seq, label_seq = [], []
-                for i in range(self.__len__()):
-                    inp, label, _, _ = self.__getitem__(i)
-                    input_seq.append(inp)
-                    label = label[-self.pred_len:]
-                    label_seq.append(label)
-                input_seq = np.array(input_seq)  # shape: [N, S, D]
-                label_seq = np.array(label_seq)  # shape: [N, P, D]
-            elif self.align_type == 5:
-                input_seq = self.data_x[:-self.pred_len]  # shape: [N, D]
-                label_seq = self.data_y[self.pred_len:]  # shape: [N, D]
-            self.Wx, self.Wy, self.means, self.stds = get_cca_projection(
-                input_seq, label_seq, 1.0, pca_dim, self.speedup_sklearn, self.align_type
-            )
-            np.save(os.path.join(self.load_from_disk, f'Wx_{self.align_type}.npy'), self.Wx)
-            np.save(os.path.join(self.load_from_disk, f'Wy_{self.align_type}.npy'), self.Wy)
-            np.save(os.path.join(self.load_from_disk, f'means_{self.align_type}.npy'), self.means)
-            np.save(os.path.join(self.load_from_disk, f'stds_{self.align_type}.npy'), self.stds)
-
-        if rank_ratio and rank_ratio <= 1.0:
-            full_rank = self.Wx.shape[1]
-            proj_dim = int(full_rank * rank_ratio)
-            self.Wx = self.Wx[:, :proj_dim]
-            self.Wy = self.Wy[:, :proj_dim]
-        elif rank_ratio < 0 or rank_ratio > 1:
-            proj_dim = int(abs(rank_ratio))
-            proj_dim = min(proj_dim, self.Wx.shape[1])
-            self.Wx = self.Wx[:, :proj_dim]
-            self.Wy = self.Wy[:, :proj_dim]
-
-        print(f"CCA Wx shape: {self.Wx.shape}")
-        print(f"CCA Wy shape: {self.Wy.shape}")
+    def inverse_transform(self, data):
+        return self.scaler.inverse_transform(data)
 
 
 class Dataset_ETT_minute_Fourier(Dataset_ETT_minute):
@@ -660,11 +403,11 @@ class Dataset_ETT_minute_Fourier(Dataset_ETT_minute):
         self, root_path, flag='train', size=None, features='S', data_path='ETTm1.csv',
         target='OT', scale=True, timeenc=0, freq='t', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
-        noise_type='sin', data_percentage=1., num_freqs=16, **kwargs
+        noise_type='sin', data_percentage=1., num_freqs=16, cycle=None, **kwargs
     ):
         super().__init__(
             root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, **kwargs
+            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, cycle, **kwargs
         )
 
         self.fourier_fit(num_freqs)
@@ -687,11 +430,11 @@ class Dataset_ETT_minute_PCA(Dataset_ETT_minute):
         target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
         noise_type='sin', data_percentage=1., trend_k=0.02, rank_ratio=1.0, 
-        pca_dim="all", reinit=0, speedup_sklearn=0, **kwargs
+        pca_dim="all", reinit=0, speedup_sklearn=0, cycle=None, **kwargs
     ):
         super().__init__(
             root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, **kwargs
+            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, cycle, **kwargs
         )
 
         self.speedup_sklearn = speedup_sklearn
@@ -720,11 +463,11 @@ class Dataset_ETT_minute_CCA(Dataset_ETT_minute):
         target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
         noise_type='sin', data_percentage=1., trend_k=0.02, rank_ratio=1.0, 
-        pca_dim="all", reinit=0, speedup_sklearn=0, align_type=0, load_from_disk="", **kwargs
+        pca_dim="all", reinit=0, speedup_sklearn=0, align_type=0, load_from_disk="", cycle=None, **kwargs
     ):
         super().__init__(
             root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, **kwargs
+            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, cycle, **kwargs
         )
 
         self.align_type = align_type
@@ -785,7 +528,7 @@ class Dataset_Custom(Dataset):
         self, root_path, flag='train', size=None, features='S', data_path='electricity.csv',
         target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
-        noise_type='sin', data_percentage=1., **kwargs
+        noise_type='sin', data_percentage=1., cycle=None, **kwargs
     ):
         # size [seq_len, label_len, pred_len]
         # info
@@ -813,6 +556,7 @@ class Dataset_Custom(Dataset):
         self.noise_seed = noise_seed
         self.noise_type = noise_type
         self.data_percentage = data_percentage
+        self.cycle = cycle
 
         self.root_path = root_path
         self.data_path = data_path
@@ -896,117 +640,6 @@ class Dataset_Custom(Dataset):
         self.data_y = data[border1:border2]
         self.data_stamp = data_stamp
 
-    def __getitem__(self, index):
-        s_begin = index
-        s_end = s_begin + self.seq_len
-        r_begin = s_end - self.label_len
-        r_end = s_end + self.pred_len
-
-        seq_x = self.data_x[s_begin:s_end]
-        seq_y = self.data_y[r_begin:r_end]
-        seq_x_mark = self.data_stamp[s_begin:s_end]
-        seq_y_mark = self.data_stamp[r_begin:r_end]
-
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
-
-    def __len__(self):
-        return len(self.data_x) - self.seq_len - self.pred_len + 1
-
-    def inverse_transform(self, data):
-        return self.scaler.inverse_transform(data)
-
-
-class Dataset_Custom_Cycle(Dataset_Custom):
-    def __init__(
-        self, root_path, flag='train', size=None, features='S', data_path='electricity.csv',
-        target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
-        add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
-        noise_type='sin', data_percentage=1., num_freqs=16, cycle=None, **kwargs
-    ):
-        self.cycle = cycle
-        super().__init__(
-            root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, **kwargs
-        )
-
-    def __read_data__(self):
-        self.scaler = StandardScaler()
-        df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
-
-        if self.set_type == 0:
-            print('Head lines of raw dataframe:')
-            print(df_raw.head(5))
-
-        '''
-        df_raw.columns: ['date', ...(other features), target feature]
-        '''
-        cols = list(df_raw.columns)
-        cols.remove(self.target)
-        cols.remove('date')
-        df_raw = df_raw[['date'] + cols + [self.target]]
-        num_train = int(len(df_raw) * 0.7)
-        num_test = int(len(df_raw) * 0.2)
-        num_vali = len(df_raw) - num_train - num_test
-        border1s = [0] if (num_train + num_vali) % 2 == 0 else [1]
-        border1s += [num_train - self.seq_len, len(df_raw) - num_test - self.seq_len]
-        border2s = [num_train, num_train + num_vali, len(df_raw)]
-        border1 = border1s[self.set_type]
-        border2 = border2s[self.set_type]
-        if self.set_type == 0 and self.data_percentage < 1.:  # train data
-            print(f"Shrink the train data to {self.data_percentage * 100}%")
-            border1 = border2 - int((border2 - border1) * self.data_percentage)
-
-        if self.features == 'M' or self.features == 'MS':
-            cols_data = df_raw.columns[1:]
-            df_data = df_raw[cols_data]
-        elif self.features == 'S':
-            df_data = df_raw[[self.target]]
-
-        if self.add_noise and self.noise_amp > 0:
-            if self.noise_type == 'normal':
-                print(f"Add normal noise to the raw data with amplitude: {self.noise_amp}")
-                data_len = border2s[1] - border1s[0]
-                tmp_data = df_data[border1s[0]:border2s[1]].copy()
-                freq_domain = np.fft.rfft(tmp_data, axis=0)
-                freq_domain += self.noise_amp
-                noise_data = np.fft.irfft(freq_domain, axis=0).real
-                df_data[border1s[0]:border2s[1]] = noise_data
-
-            elif self.noise_type == 'sin':
-                print(f"Add sin noise to the raw data with amplitude: {self.noise_amp}")
-                data_len = border2s[1] - border1s[0]
-                noise_freq = int(self.noise_freq_percentage * (data_len // 2 + 1))
-                tmp_data = df_data[border1s[0]:border2s[1]].copy()
-                freq_domain = np.fft.rfft(tmp_data, axis=0)
-                freq_domain[-noise_freq:] += self.noise_amp
-                noise_data = np.fft.irfft(freq_domain, axis=0).real
-                df_data[border1s[0]:border2s[1]] = noise_data
-            else:
-                raise NotImplementedError(f"Unrecognized noise type: {self.noise_type}")
-
-        if self.scale:
-            train_data = df_data[border1s[0]:border2s[0]]
-            self.scaler.fit(train_data.values)
-            data = self.scaler.transform(df_data.values)
-        else:
-            data = df_data.values
-
-        df_stamp = df_raw[['date']][border1:border2]
-        df_stamp['date'] = pd.to_datetime(df_stamp.date)
-        if self.timeenc == 0:
-            df_stamp['month'] = df_stamp.date.apply(lambda row: row.month, 1)
-            df_stamp['day'] = df_stamp.date.apply(lambda row: row.day, 1)
-            df_stamp['weekday'] = df_stamp.date.apply(lambda row: row.weekday(), 1)
-            df_stamp['hour'] = df_stamp.date.apply(lambda row: row.hour, 1)
-            data_stamp = df_stamp.drop(['date'], 1).values
-        elif self.timeenc == 1:
-            data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
-            data_stamp = data_stamp.transpose(1, 0)
-
-        self.data_x = data[border1:border2]
-        self.data_y = data[border1:border2]
-        self.data_stamp = data_stamp
-        
         # add cycle
         self.cycle_index = (np.arange(len(data)) % self.cycle)[border1:border2]
 
@@ -1024,70 +657,11 @@ class Dataset_Custom_Cycle(Dataset_Custom):
 
         return seq_x, seq_y, seq_x_mark, seq_y_mark, cycle_index
 
+    def __len__(self):
+        return len(self.data_x) - self.seq_len - self.pred_len + 1
 
-class Dataset_Custom_CCA_Cycle(Dataset_Custom_Cycle):
-    def __init__(
-        self, root_path, flag='train', size=None, features='S', data_path='electricity.csv',
-        target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
-        add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
-        noise_type='sin', data_percentage=1., num_freqs=16, cycle=None, rank_ratio=1.0, 
-        pca_dim="all", reinit=0, speedup_sklearn=0, align_type=0, load_from_disk="", **kwargs
-    ):
-        super().__init__(
-            root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, cycle=cycle, **kwargs
-        )
-        self.align_type = align_type
-        self.speedup_sklearn = speedup_sklearn
-        self.load_from_disk = load_from_disk
-        self.cca_fit(rank_ratio, pca_dim, reinit)
-
-    def cca_fit(self, rank_ratio=1.0, pca_dim="D", reinit=0):
-        if self.set_type != 0:
-            self.Wx = None
-            self.Wy = None
-            return
-
-        print("Fitting CCA ...")
-        if self.load_from_disk and os.path.exists(os.path.join(self.load_from_disk, f'Wx_{self.align_type}.npy')):
-            self.Wx = np.load(os.path.join(self.load_from_disk, f'Wx_{self.align_type}.npy'))
-            self.Wy = np.load(os.path.join(self.load_from_disk, f'Wy_{self.align_type}.npy'))
-            self.means = np.load(os.path.join(self.load_from_disk, f'means_{self.align_type}.npy'))
-            self.stds = np.load(os.path.join(self.load_from_disk, f'stds_{self.align_type}.npy'))
-        else:
-            if self.align_type != 5:
-                input_seq, label_seq = [], []
-                for i in range(self.__len__()):
-                    inp, label, _, _ = self.__getitem__(i)
-                    input_seq.append(inp)
-                    label = label[-self.pred_len:]
-                    label_seq.append(label)
-                input_seq = np.array(input_seq)  # shape: [N, S, D]
-                label_seq = np.array(label_seq)  # shape: [N, P, D]
-            elif self.align_type == 5:
-                input_seq = self.data_x[:-self.pred_len]  # shape: [N, D]
-                label_seq = self.data_y[self.pred_len:]  # shape: [N, D]
-            self.Wx, self.Wy, self.means, self.stds = get_cca_projection(
-                input_seq, label_seq, 1.0, pca_dim, self.speedup_sklearn, self.align_type
-            )
-            np.save(os.path.join(self.load_from_disk, f'Wx_{self.align_type}.npy'), self.Wx)
-            np.save(os.path.join(self.load_from_disk, f'Wy_{self.align_type}.npy'), self.Wy)
-            np.save(os.path.join(self.load_from_disk, f'means_{self.align_type}.npy'), self.means)
-            np.save(os.path.join(self.load_from_disk, f'stds_{self.align_type}.npy'), self.stds)
-
-        if rank_ratio and rank_ratio <= 1.0:
-            full_rank = self.Wx.shape[1]
-            proj_dim = int(full_rank * rank_ratio)
-            self.Wx = self.Wx[:, :proj_dim]
-            self.Wy = self.Wy[:, :proj_dim]
-        elif rank_ratio < 0 or rank_ratio > 1:
-            proj_dim = int(abs(rank_ratio))
-            proj_dim = min(proj_dim, self.Wx.shape[1])
-            self.Wx = self.Wx[:, :proj_dim]
-            self.Wy = self.Wy[:, :proj_dim]
-
-        print(f"CCA Wx shape: {self.Wx.shape}")
-        print(f"CCA Wy shape: {self.Wy.shape}")
+    def inverse_transform(self, data):
+        return self.scaler.inverse_transform(data)
 
 
 class Dataset_Custom_Fourier(Dataset_Custom):
@@ -1095,11 +669,11 @@ class Dataset_Custom_Fourier(Dataset_Custom):
         self, root_path, flag='train', size=None, features='S', data_path='electricity.csv',
         target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
-        noise_type='sin', data_percentage=1., num_freqs=16, **kwargs
+        noise_type='sin', data_percentage=1., num_freqs=16, cycle=None, **kwargs
     ):
         super().__init__(
             root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, **kwargs
+            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, cycle, **kwargs
         )
 
         self.fourier_fit(num_freqs)
@@ -1122,11 +696,11 @@ class Dataset_Custom_PCA(Dataset_Custom):
         target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
         noise_type='sin', data_percentage=1., rank_ratio=1.0, pca_dim="all", 
-        reinit=0, speedup_sklearn=0, **kwargs
+        reinit=0, speedup_sklearn=0, cycle=None, **kwargs
     ):
         super().__init__(
             root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, **kwargs
+            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, cycle, **kwargs
         )
 
         self.speedup_sklearn = speedup_sklearn
@@ -1155,11 +729,11 @@ class Dataset_Custom_FA(Dataset_Custom):
         target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
         noise_type='sin', data_percentage=1., rank_ratio=1.0, pca_dim="all", 
-        reinit=0, speedup_sklearn=0, **kwargs
+        reinit=0, speedup_sklearn=0, cycle=None, **kwargs
     ):
         super().__init__(
             root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, **kwargs
+            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, cycle, **kwargs
         )
 
         self.speedup_sklearn = speedup_sklearn
@@ -1188,11 +762,11 @@ class Dataset_Custom_RobustPCA(Dataset_Custom):
         target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
         noise_type='sin', data_percentage=1., rank_ratio=1.0, pca_dim="all", 
-        reinit=0, speedup_sklearn=0, **kwargs
+        reinit=0, speedup_sklearn=0, cycle=None, **kwargs
     ):
         super().__init__(
             root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, **kwargs
+            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, cycle, **kwargs
         )
 
         self.speedup_sklearn = speedup_sklearn
@@ -1221,11 +795,11 @@ class Dataset_Custom_SVD(Dataset_Custom):
         target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
         noise_type='sin', data_percentage=1., rank_ratio=1.0, pca_dim="all", 
-        reinit=0, speedup_sklearn=0, **kwargs
+        reinit=0, speedup_sklearn=0, cycle=None, **kwargs
     ):
         super().__init__(
             root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, **kwargs
+            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, cycle, **kwargs
         )
 
         self.speedup_sklearn = speedup_sklearn
@@ -1253,11 +827,11 @@ class Dataset_Custom_ICA(Dataset_Custom):
         target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
         noise_type='sin', data_percentage=1., rank_ratio=1.0, pca_dim="all", 
-        reinit=0, speedup_sklearn=0, **kwargs
+        reinit=0, speedup_sklearn=0, cycle=None, **kwargs
     ):
         super().__init__(
             root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, **kwargs
+            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, cycle, **kwargs
         )
 
         self.speedup_sklearn = speedup_sklearn
@@ -1287,11 +861,11 @@ class Dataset_Custom_RobustICA(Dataset_Custom):
         target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
         noise_type='sin', data_percentage=1., rank_ratio=1.0, pca_dim="all", 
-        reinit=0, speedup_sklearn=0, **kwargs
+        reinit=0, speedup_sklearn=0, cycle=None, **kwargs
     ):
         super().__init__(
             root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, **kwargs
+            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, cycle, **kwargs
         )
 
         self.speedup_sklearn = speedup_sklearn
@@ -1319,11 +893,11 @@ class Dataset_Custom_CCA(Dataset_Custom):
         target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
         noise_type='sin', data_percentage=1., rank_ratio=1.0, pca_dim="all", 
-        reinit=0, speedup_sklearn=0, align_type=0, load_from_disk="", **kwargs
+        reinit=0, speedup_sklearn=0, align_type=0, load_from_disk="", cycle=None, **kwargs
     ):
         super().__init__(
             root_path, flag, size, features, data_path, target, scale, timeenc, freq, seasonal_patterns, 
-            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, **kwargs
+            add_noise, noise_amp, noise_freq_percentage, noise_seed, noise_type, data_percentage, cycle, **kwargs
         )
 
         self.align_type = align_type
@@ -1382,7 +956,7 @@ class Dataset_Custom_CCA(Dataset_Custom):
 class Dataset_Synthetic(Dataset):
     def __init__(
         self, root_path, flag='train', size=None, features='S', data_path='ETTh1.csv', 
-        target='OT', scale=True, timeenc=0, freq='h', **kwargs
+        target='OT', scale=True, timeenc=0, freq='h', cycle=None, **kwargs
     ):
         # size [seq_len, label_len, pred_len]
         # info
@@ -1399,6 +973,7 @@ class Dataset_Synthetic(Dataset):
         self.scale = scale
         self.timeenc = timeenc
         self.freq = freq
+        self.cycle = cycle
 
         self.root_path = root_path
         self.data_path = data_path
@@ -1436,6 +1011,9 @@ class Dataset_Synthetic(Dataset):
         self.data_y = data[border1:border2]
         # self.data_stamp = data_stamp
 
+        # add cycle
+        self.cycle_index = (np.arange(len(data)) % self.cycle)[border1:border2]
+
     def __getitem__(self, index):
         s_begin = index
         s_end = s_begin + self.seq_len
@@ -1448,8 +1026,9 @@ class Dataset_Synthetic(Dataset):
         # seq_y_mark = self.data_stamp[r_begin:r_end]
         seq_x_mark = torch.zeros((seq_x.shape[0], 1))
         seq_y_mark = torch.zeros((seq_y.shape[0], 1))
+        cycle_index = torch.tensor(self.cycle_index[s_end])
 
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
+        return seq_x, seq_y, seq_x_mark, seq_y_mark, cycle_index
 
     def __len__(self):
         return len(self.data_x) - self.seq_len - self.pred_len + 1
@@ -1461,7 +1040,7 @@ class Dataset_Synthetic(Dataset):
 class Dataset_PEMS(Dataset):
     def __init__(
         self, root_path, flag='train', size=None, features='S', data_path='ETTh1.csv',
-        target='OT', scale=True, timeenc=0, freq='h', add_noise=False, **kwargs
+        target='OT', scale=True, timeenc=0, freq='h', add_noise=False, cycle=None, **kwargs
     ):
         # size [seq_len, label_len, pred_len]
         # info
@@ -1479,67 +1058,11 @@ class Dataset_PEMS(Dataset):
         self.timeenc = timeenc
         self.freq = freq
         self.add_noise = add_noise
+        self.cycle = cycle
 
         self.root_path = root_path
         self.data_path = data_path
         self.__read_data__()
-
-    def __read_data__(self):
-        self.scaler = StandardScaler()
-        data_file = os.path.join(self.root_path, self.data_path)
-        data = np.load(data_file, allow_pickle=True)
-        data = data['data'][:, :, 0]
-
-        train_ratio = 0.6
-        valid_ratio = 0.2
-        train_data = data[:int(train_ratio * len(data))]
-        valid_data = data[int(train_ratio * len(data)): int((train_ratio + valid_ratio) * len(data))]
-        test_data = data[int((train_ratio + valid_ratio) * len(data)):]
-        total_data = [train_data, valid_data, test_data]
-        data = total_data[self.set_type]
-
-        if self.scale:
-            self.scaler.fit(train_data)
-            data = self.scaler.transform(data)
-
-        df = pd.DataFrame(data)
-        df = df.fillna(method='ffill', limit=len(df)).fillna(method='bfill', limit=len(df)).values
-
-        self.data_x = df
-        self.data_y = df
-
-    def __getitem__(self, index):
-        s_begin = index
-        s_end = s_begin + self.seq_len
-        r_begin = s_end - self.label_len
-        r_end = s_end + self.pred_len
-
-        seq_x = self.data_x[s_begin:s_end]
-        seq_y = self.data_y[r_begin:r_end]
-        seq_x_mark = torch.zeros((seq_x.shape[0], 1))
-        seq_y_mark = torch.zeros((seq_y.shape[0], 1))
-
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
-
-    def __len__(self):
-        return len(self.data_x) - self.seq_len - self.pred_len + 1
-
-    def inverse_transform(self, data):
-        return self.scaler.inverse_transform(data)
-
-
-class Dataset_PEMS_Cycle(Dataset_PEMS):
-    def __init__(
-        self, root_path, flag='train', size=None, features='S', data_path='ETTh1.csv',
-        target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
-        add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
-        noise_type='sin', data_percentage=1., rank_ratio=1.0, pca_dim="all", 
-        reinit=0, speedup_sklearn=0, cycle=None, **kwargs
-    ):
-        self.cycle = cycle
-        super().__init__(
-            root_path, flag, size, features, data_path, target, scale, timeenc, freq, **kwargs
-        )
 
     def __read_data__(self):
         self.scaler = StandardScaler()
@@ -1581,69 +1104,11 @@ class Dataset_PEMS_Cycle(Dataset_PEMS):
 
         return seq_x, seq_y, seq_x_mark, seq_y_mark, cycle_index
 
+    def __len__(self):
+        return len(self.data_x) - self.seq_len - self.pred_len + 1
 
-class Dataset_PEMS_CCA_Cycle(Dataset_PEMS_Cycle):
-    def __init__(
-        self, root_path, flag='train', size=None, features='S', data_path='ETTh1.csv',
-        target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
-        add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
-        noise_type='sin', data_percentage=1., rank_ratio=1.0, pca_dim="all", 
-        reinit=0, speedup_sklearn=0, cycle=None, align_type=0, load_from_disk="", **kwargs
-    ):
-        super().__init__(
-            root_path, flag, size, features, data_path, target, scale, timeenc, freq, cycle=cycle, **kwargs
-        )
-        self.align_type = align_type
-        self.speedup_sklearn = speedup_sklearn
-        self.load_from_disk = load_from_disk
-        self.cca_fit(rank_ratio, pca_dim, reinit)
-
-    def cca_fit(self, rank_ratio=1.0, pca_dim="D", reinit=0):
-        if self.set_type != 0:
-            self.Wx = None
-            self.Wy = None
-            return
-
-        print("Fitting CCA ...")
-        if self.load_from_disk and os.path.exists(os.path.join(self.load_from_disk, f'Wx_{self.align_type}.npy')):
-            self.Wx = np.load(os.path.join(self.load_from_disk, f'Wx_{self.align_type}.npy'))
-            self.Wy = np.load(os.path.join(self.load_from_disk, f'Wy_{self.align_type}.npy'))
-            self.means = np.load(os.path.join(self.load_from_disk, f'means_{self.align_type}.npy'))
-            self.stds = np.load(os.path.join(self.load_from_disk, f'stds_{self.align_type}.npy'))
-        else:
-            if self.align_type != 5:
-                input_seq, label_seq = [], []
-                for i in range(self.__len__()):
-                    inp, label, _, _ = self.__getitem__(i)
-                    input_seq.append(inp)
-                    label = label[-self.pred_len:]
-                    label_seq.append(label)
-                input_seq = np.array(input_seq)  # shape: [N, S, D]
-                label_seq = np.array(label_seq)  # shape: [N, P, D]
-            elif self.align_type == 5:
-                input_seq = self.data_x[:-self.pred_len]  # shape: [N, D]
-                label_seq = self.data_y[self.pred_len:]  # shape: [N, D]
-            self.Wx, self.Wy, self.means, self.stds = get_cca_projection(
-                input_seq, label_seq, 1.0, pca_dim, self.speedup_sklearn, self.align_type
-            )
-            np.save(os.path.join(self.load_from_disk, f'Wx_{self.align_type}.npy'), self.Wx)
-            np.save(os.path.join(self.load_from_disk, f'Wy_{self.align_type}.npy'), self.Wy)
-            np.save(os.path.join(self.load_from_disk, f'means_{self.align_type}.npy'), self.means)
-            np.save(os.path.join(self.load_from_disk, f'stds_{self.align_type}.npy'), self.stds)
-
-        if rank_ratio and rank_ratio <= 1.0:
-            full_rank = self.Wx.shape[1]
-            proj_dim = int(full_rank * rank_ratio)
-            self.Wx = self.Wx[:, :proj_dim]
-            self.Wy = self.Wy[:, :proj_dim]
-        elif rank_ratio < 0 or rank_ratio > 1:
-            proj_dim = int(abs(rank_ratio))
-            proj_dim = min(proj_dim, self.Wx.shape[1])
-            self.Wx = self.Wx[:, :proj_dim]
-            self.Wy = self.Wy[:, :proj_dim]
-
-        print(f"CCA Wx shape: {self.Wx.shape}")
-        print(f"CCA Wy shape: {self.Wy.shape}")
+    def inverse_transform(self, data):
+        return self.scaler.inverse_transform(data)
 
 
 class Dataset_PEMS_PCA(Dataset_PEMS):
@@ -1652,10 +1117,11 @@ class Dataset_PEMS_PCA(Dataset_PEMS):
         target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
         noise_type='sin', data_percentage=1., rank_ratio=1.0, pca_dim="all", 
-        reinit=0, speedup_sklearn=0, **kwargs
+        reinit=0, speedup_sklearn=0, cycle=None, **kwargs
     ):
         super().__init__(
-            root_path, flag, size, features, data_path, target, scale, timeenc, freq, **kwargs
+            root_path, flag, size, features, data_path, target, scale, timeenc, freq, 
+            add_noise, cycle, **kwargs
         )
 
         self.speedup_sklearn = speedup_sklearn
@@ -1684,10 +1150,11 @@ class Dataset_PEMS_CCA(Dataset_PEMS):
         target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
         noise_type='sin', data_percentage=1., rank_ratio=1.0, pca_dim="all", 
-        reinit=0, speedup_sklearn=0, align_type=0, load_from_disk="", **kwargs
+        reinit=0, speedup_sklearn=0, align_type=0, load_from_disk="", cycle=None, **kwargs
     ):
         super().__init__(
-            root_path, flag, size, features, data_path, target, scale, timeenc, freq, add_noise, **kwargs
+            root_path, flag, size, features, data_path, target, scale, timeenc, freq, 
+            add_noise, cycle, **kwargs
         )
 
         self.align_type = align_type
@@ -1746,7 +1213,7 @@ class Dataset_PEMS_CCA(Dataset_PEMS):
 class Dataset_Solar(Dataset):
     def __init__(
         self, root_path, flag='train', size=None, features='S', data_path='ETTh1.csv', 
-        target='OT', scale=True, timeenc=0, freq='h', **kwargs
+        target='OT', scale=True, timeenc=0, freq='h', cycle=None, **kwargs
     ):
         # size [seq_len, label_len, pred_len]
         # info
@@ -1763,6 +1230,7 @@ class Dataset_Solar(Dataset):
         self.scale = scale
         self.timeenc = timeenc
         self.freq = freq
+        self.cycle = cycle
 
         self.root_path = root_path
         self.data_path = data_path
@@ -1799,6 +1267,9 @@ class Dataset_Solar(Dataset):
         self.data_x = data[border1:border2]
         self.data_y = data[border1:border2]
 
+        # add cycle
+        self.cycle_index = (np.arange(len(data)) % self.cycle)[border1:border2]
+
     def __getitem__(self, index):
         s_begin = index
         s_end = s_begin + self.seq_len
@@ -1809,8 +1280,9 @@ class Dataset_Solar(Dataset):
         seq_y = self.data_y[r_begin:r_end]
         seq_x_mark = torch.zeros((seq_x.shape[0], 1))
         seq_y_mark = torch.zeros((seq_y.shape[0], 1))
+        cycle_index = torch.tensor(self.cycle_index[s_end])
 
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
+        return seq_x, seq_y, seq_x_mark, seq_y_mark, cycle_index
 
     def __len__(self):
         return len(self.data_x) - self.seq_len - self.pred_len + 1
@@ -1824,7 +1296,7 @@ class Dataset_M4(Dataset):
         self, root_path, flag='pred', size=None, features='S', data_path='ETTh1.csv',
         target='OT', scale=True, inverse=False, timeenc=0, freq='15min', seasonal_patterns='Yearly', 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
-        noise_type='sin', data_percentage=1., **kwargs
+        noise_type='sin', data_percentage=1., cycle=None, **kwargs
     ):
         # size [seq_len, label_len, pred_len]
         # init
@@ -1844,6 +1316,7 @@ class Dataset_M4(Dataset):
         self.window_sampling_limit = int(self.history_size * self.pred_len)
         self.flag = flag
         self.add_noise = add_noise
+        self.cycle = cycle
 
         self.__read_data__()
 
@@ -1911,13 +1384,13 @@ class Dataset_M4_PCA(Dataset_M4):
         target='OT', scale=True, inverse=False, timeenc=0, freq='15min', seasonal_patterns='Yearly', 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
         noise_type='sin', data_percentage=1., rank_ratio=1.0, pca_dim="all", 
-        reinit=0, speedup_sklearn=0, **kwargs
+        reinit=0, speedup_sklearn=0, cycle=None, **kwargs
     ):
         super().__init__(
             root_path, flag, size, features, data_path, target, scale, inverse,
             timeenc, freq, seasonal_patterns, add_noise, noise_amp,
             noise_freq_percentage, noise_seed, noise_type,
-            data_percentage, **kwargs
+            data_percentage, cycle, **kwargs
         )
 
         self.speedup_sklearn = speedup_sklearn
@@ -1946,13 +1419,13 @@ class Dataset_M4_CCA(Dataset_M4):
         target='OT', scale=True, inverse=False, timeenc=0, freq='15min', seasonal_patterns='Yearly', 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
         noise_type='sin', data_percentage=1., rank_ratio=1.0, pca_dim="all", 
-        reinit=0, speedup_sklearn=0, align_type=0, load_from_disk="", **kwargs
+        reinit=0, speedup_sklearn=0, align_type=0, load_from_disk="", cycle=None, **kwargs
     ):
         super().__init__(
             root_path, flag, size, features, data_path, target, scale, inverse,
             timeenc, freq, seasonal_patterns, add_noise, noise_amp,
             noise_freq_percentage, noise_seed, noise_type,
-            data_percentage, **kwargs
+            data_percentage, cycle, **kwargs
         )
 
         self.align_type = align_type
@@ -2359,7 +1832,7 @@ class Dataset_SRU(Dataset):
         self, root_path, flag='train', size=None, features='S', data_path='SRU_data.txt',
         target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
         add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
-        noise_type='sin', data_percentage=1., shift=0, **kwargs
+        noise_type='sin', data_percentage=1., shift=0, cycle=None, **kwargs
     ):
         # size [seq_len, label_len, pred_len]
         self.seq_len = size[0]
@@ -2376,6 +1849,7 @@ class Dataset_SRU(Dataset):
         self.timeenc = timeenc
         self.freq = freq
         self.shift = shift
+        self.cycle = cycle
 
         self.root_path = root_path
         self.data_path = data_path
@@ -2434,6 +1908,9 @@ class Dataset_SRU(Dataset):
         self.data_x = data[border1:border2]
         self.data_y = data[border1:border2]
 
+        # add cycle
+        self.cycle_index = (np.arange(len(data)) % self.cycle)[border1:border2]
+
     def __getitem__(self, index):
         s_begin = index
         s_end = s_begin + self.seq_len
@@ -2444,8 +1921,9 @@ class Dataset_SRU(Dataset):
         seq_y = self.data_y[r_begin:r_end]
         seq_x_mark = torch.zeros((seq_x.shape[0], 1))
         seq_y_mark = torch.zeros((seq_y.shape[0], 1))
+        cycle_index = torch.tensor(self.cycle_index[s_end])
 
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
+        return seq_x, seq_y, seq_x_mark, seq_y_mark, cycle_index
 
     def __len__(self):
         return len(self.data_x) - self.seq_len - self.pred_len + 1

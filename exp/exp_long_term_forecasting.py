@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.profiler as profiler
 from data_provider.data_factory import data_provider
 from exp.exp_basic import Exp_Basic
+from models import MODEL_REQUIRES_CYCLE
 from torch import optim
 from utils.dilate_loss import dilate_loss
 from utils.dilate_loss_cuda import DilateLossCUDA
@@ -47,43 +48,14 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         else:
             self.mask = None
 
-    def _build_model(self):
-        model = self.model_dict[self.args.model].Model(self.args).float()
-
-        pretrain_model_path = self.args.pretrain_model_path
-        if pretrain_model_path and os.path.exists(pretrain_model_path):
-            print(f'Loading pretrained model from {pretrain_model_path}')
-            state_dict = torch.load(pretrain_model_path)
-            model.load_state_dict(state_dict, strict=False)
-
-        if self.args.use_multi_gpu and self.args.use_gpu:
-            model = nn.DataParallel(model, device_ids=self.args.device_ids)
-        return model
-
-    def _get_data(self, flag):
-        data_set, data_loader = data_provider(self.args, flag)
-        return data_set, data_loader
-
-    def _select_optimizer(self):
-        if self.args.optim_type == 'adam':
-            optim_class = optim.Adam
-        elif self.args.optim_type == 'adamw':
-            optim_class = optim.AdamW
-        model_optim = optim_class(self.model.parameters(), lr=self.args.learning_rate)
-        return model_optim
-
-    def _select_criterion(self):
-        criterion = nn.MSELoss()
-        return criterion
-
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
         self.model.eval()
 
         eval_time = time.time()
         with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(vali_loader):
-                outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark)
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(vali_loader):
+                outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
 
                 pred = outputs.detach()
                 true = batch_y.detach()
@@ -98,54 +70,31 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         self.model.train()
         return total_loss
 
-    def forward_step(self, batch_x, batch_y, batch_x_mark, batch_y_mark):
-        batch_x = batch_x.float().to(self.device)
-        batch_y = batch_y.float().to(self.device)
-
-        if ('PEMS' in self.args.data or 'SRU' in self.args.data) and self.args.model not in ['TiDE']:
-            batch_x_mark = None
-            batch_y_mark = None
-        else:
-            batch_x_mark = batch_x_mark.float().to(self.device)
-            batch_y_mark = batch_y_mark.float().to(self.device)
-
-        # decoder input
-        dec_inp = torch.zeros_like(batch_y[:, -self.pred_len:, :]).float()
-        dec_inp = torch.cat([batch_y[:, :self.label_len, :], dec_inp], dim=1).float().to(self.device)
-
-        # encoder - decoder
-        if self.args.output_attention:
-            outputs, attn = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
-        else:
-            # outputs shape: [B, P, D]
-            outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
-            attn = None
-
-        f_dim = -1 if self.args.features == 'MS' else 0
-        outputs = outputs[:, -self.pred_len:, f_dim:]
-        batch_y = batch_y[:, -self.pred_len:, f_dim:]
-        return outputs, batch_y, attn
-
-    def train(self, setting, prof=None):
-        train_data, train_loader = self._get_data(flag='train')
+    def initialize_cache(self, train_data):
+        cache = None
         if self.args.auxi_mode == 'basis':
             if self.args.auxi_type == 'random':
-                random_cache = Random_Cache(
+                cache = Random_Cache(
                     rank_ratio=self.args.rank_ratio, pca_dim=self.args.pca_dim, pred_len=self.pred_len, 
                     enc_in=self.args.enc_in, device=self.device
                 )
             elif self.args.auxi_type == 'fa':
-                fa_cache = Basis_Cache(train_data.fa_components, train_data.initializer, mean=train_data.fa_mean, device=self.device)
+                cache = Basis_Cache(train_data.fa_components, train_data.initializer, mean=train_data.fa_mean, device=self.device)
             elif self.args.auxi_type == 'pca':
-                pca_cache = Basis_Cache(train_data.pca_components, train_data.initializer, weights=train_data.weights, device=self.device)
+                cache = Basis_Cache(train_data.pca_components, train_data.initializer, weights=train_data.weights, device=self.device)
             elif self.args.auxi_type == 'robustpca':
-                robust_pca_cache = Basis_Cache(train_data.pca_components, train_data.initializer, mean=train_data.rpca_mean, device=self.device)
+                cache = Basis_Cache(train_data.pca_components, train_data.initializer, mean=train_data.rpca_mean, device=self.device)
             elif self.args.auxi_type == 'svd':
-                svd_cache = Basis_Cache(train_data.svd_components, train_data.initializer, device=self.device)
+                cache = Basis_Cache(train_data.svd_components, train_data.initializer, device=self.device)
             elif self.args.auxi_type == 'ica':
-                ica_cache = Basis_Cache(train_data.ica_components, train_data.initializer, mean=train_data.ica_mean, whitening=train_data.whitening, device=self.device)
+                cache = Basis_Cache(train_data.ica_components, train_data.initializer, mean=train_data.ica_mean, whitening=train_data.whitening, device=self.device)
             elif self.args.auxi_type == 'robustica':
-                robust_ica_cache = Basis_Cache(train_data.ica_components, train_data.initializer, device=self.device)
+                cache = Basis_Cache(train_data.ica_components, train_data.initializer, device=self.device)
+        return cache
+
+    def train(self, setting, prof=None):
+        train_data, train_loader = self._get_data(flag='train')
+        cache = self.initialize_cache(train_data)
         vali_data, vali_loader = self._get_data(flag='val')
 
         path = os.path.join(self.args.checkpoints, setting)
@@ -187,12 +136,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
             self.model.train()
             epoch_time = time.time()
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(train_loader):
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(train_loader):
                 self.step += 1
                 iter_count += 1
                 model_optim.zero_grad()
 
-                outputs, batch_y, attn = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark)
+                outputs, batch_y, attn = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
 
                 loss = 0
                 if self.args.rec_lambda:
@@ -202,18 +151,18 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     else:
                         loss_rec = criterion(outputs, batch_y)
                     loss += self.args.rec_lambda * loss_rec
+                else:
+                    loss_rec = torch.tensor(1e4)
+                if self.step % self.log_step == 0:
+                    self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', loss_rec, self.step)
 
-                    if self.step % self.log_step == 0:
-                        self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', loss_rec, self.step)
-
-                if self.args.l1_weight:
-                    if attn:
-                        loss += self.args.l1_weight * attn[0]
+                if self.args.l1_weight and attn:
+                    loss += self.args.l1_weight * attn[0]
 
                 if self.args.auxi_lambda:
                     if self.args.joint_forecast:  # joint distribution forecasting
-                        outputs = torch.concat((batch_x, outputs), dim=1)  # [B, S+P, D]
-                        batch_y = torch.concat((batch_x, batch_y), dim=1)  # [B, S+P, D]
+                        outputs = torch.concat((batch_x.to(outputs.device), outputs), dim=1)  # [B, S+P, D]
+                        batch_y = torch.concat((batch_x.to(batch_y.device), batch_y), dim=1)  # [B, S+P, D]
 
                     if self.args.auxi_mode == "fft":
                         loss_auxi = torch.fft.fft(outputs, dim=1) - torch.fft.fft(batch_y, dim=1)  # shape: [B, P, D]
@@ -255,18 +204,14 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         elif self.args.auxi_type == "laguerre":
                             loss_auxi = laguerre_torch(outputs, **kwargs) - laguerre_torch(batch_y, **kwargs)
                         elif self.args.auxi_type == "random":
-                            kwargs = {
-                                'pca_dim': self.args.pca_dim, 'random_cache': random_cache, 'device': self.device
-                            }
+                            kwargs = {'pca_dim': self.args.pca_dim, 'random_cache': cache, 'device': self.device}
                             loss_auxi = random_torch(outputs, **kwargs) - random_torch(batch_y, **kwargs)
                         elif self.args.auxi_type == "fa":
-                            kwargs = {
-                                'pca_dim': self.args.pca_dim, 'fa_cache': fa_cache, 'reinit': self.args.reinit, 'device': self.device
-                            }
+                            kwargs = {'pca_dim': self.args.pca_dim, 'fa_cache': cache, 'reinit': self.args.reinit, 'device': self.device}
                             loss_auxi = fa_torch(outputs, **kwargs) - fa_torch(batch_y, **kwargs)
                         elif self.args.auxi_type == "pca":
                             kwargs = {
-                                'pca_dim': self.args.pca_dim, 'pca_cache': pca_cache, 'use_weights': self.args.use_weights, 
+                                'pca_dim': self.args.pca_dim, 'pca_cache': cache, 'use_weights': self.args.use_weights, 
                                 'reinit': self.args.reinit, 'device': self.device
                             }
                             if prof is not None:
@@ -275,24 +220,16 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                             else:
                                 loss_auxi = pca_torch(outputs, **kwargs) - pca_torch(batch_y, **kwargs)
                         elif self.args.auxi_type == "robustpca":
-                            kwargs = {
-                                'pca_dim': self.args.pca_dim, 'pca_cache': robust_pca_cache, 'reinit': self.args.reinit, 'device': self.device
-                            }
+                            kwargs = {'pca_dim': self.args.pca_dim, 'pca_cache': cache, 'reinit': self.args.reinit, 'device': self.device}
                             loss_auxi = robust_pca_torch(outputs, **kwargs) - robust_pca_torch(batch_y, **kwargs)
                         elif self.args.auxi_type == "svd":
-                            kwargs = {
-                                'pca_dim': self.args.pca_dim, 'svd_cache': svd_cache, 'reinit': self.args.reinit, 'device': self.device
-                            }
+                            kwargs = {'pca_dim': self.args.pca_dim, 'svd_cache': cache, 'reinit': self.args.reinit, 'device': self.device}
                             loss_auxi = svd_torch(outputs, **kwargs) - svd_torch(batch_y, **kwargs)
                         elif self.args.auxi_type == "ica":
-                            kwargs = {
-                                'pca_dim': self.args.pca_dim, 'ica_cache': ica_cache, 'reinit': self.args.reinit, 'device': self.device
-                            }
+                            kwargs = {'pca_dim': self.args.pca_dim, 'ica_cache': cache, 'reinit': self.args.reinit, 'device': self.device}
                             loss_auxi = ica_torch(outputs, **kwargs) - ica_torch(batch_y, **kwargs)
                         elif self.args.auxi_type == "robustica":
-                            kwargs = {
-                                'pca_dim': self.args.pca_dim, 'ica_cache': robust_ica_cache, 'reinit': self.args.reinit, 'device': self.device
-                            }
+                            kwargs = {'pca_dim': self.args.pca_dim, 'ica_cache': cache, 'reinit': self.args.reinit, 'device': self.device}
                             loss_auxi = robust_ica_torch(outputs, **kwargs) - robust_ica_torch(batch_y, **kwargs)
                         else:
                             raise NotImplementedError
@@ -351,7 +288,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     elif self.args.auxi_mode == "fft_ot":
                         loss_auxi = cal_wasserstein(
                             outputs, batch_y, self.args.distance, ot_type=self.args.ot_type, normalize=self.args.normalize, 
-                            mask_factor=self.args.mask_factor, reg_sk=self.args.reg_sk, stopThr=self.args.stopThr, numItermax=self.args.numItermax
+                            mask_factor=self.args.mask_factor, reg_sk=self.args.reg_sk, stopThr=self.args.stopThr, numItermax=self.args.numItermax, var_weight=self.args.var_weight
                         )
 
                     elif self.args.auxi_mode == "fourier_koopman":
@@ -365,10 +302,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
                     elif self.args.auxi_mode == "soft_dtw":
                         loss_auxi = sdtw(outputs, batch_y)
-                    
+
                     elif self.args.auxi_mode == "dtw":
                         loss_auxi = dtw(outputs, batch_y)[0].mean()
-                        
+
                     elif self.args.auxi_mode == "dilate_cuda":
                         loss_auxi = dilate_cuda(outputs, batch_y)
 
@@ -390,9 +327,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         raise NotImplementedError
 
                     loss += self.args.auxi_lambda * loss_auxi
-
-                    if self.step % self.log_step == 0:
-                        self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', loss_auxi, self.step)
+                else:
+                    loss_auxi = torch.tensor(1e4)
+                if self.step % self.log_step == 0:
+                    self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', loss_auxi, self.step)
 
                 if torch.isnan(loss) or torch.isinf(loss):
                     print(f"Loss is NaN or Inf, skipping epoch {self.epoch} step {self.step}")
@@ -403,7 +341,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 self.writer.add_scalar(f'{self.pred_len}/train/loss_iter', loss.item(), self.step)
 
                 if (i + 1) % 100 == 0:
-                    print("\titers: {}, epoch: {} | loss: {:.7f}".format(i + 1, self.epoch, loss.item()))
+                    print(
+                        "\titers: {}, epoch: {} | loss_rec: {:.7f}, loss_auxi: {:.7f}, loss: {:.7f}".format(
+                            i + 1, self.epoch, loss_rec.item(), loss_auxi.item(), loss.item()
+                        )
+                    )
                     cost_time = time.time() - time_now
                     speed = cost_time / iter_count
                     left_time = speed * ((self.args.train_epochs - epoch) * train_steps - i)
@@ -457,7 +399,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         test_data, test_loader = self._get_data(flag='test')
         if test:
             print('loading model')
-            self.model.load_state_dict(torch.load(os.path.join(self.args.checkpoints, setting, 'checkpoint.pth')))
+            ckpt_dir = os.path.join(self.args.checkpoints, setting)
+            self.model.load_state_dict(torch.load(os.path.join(ckpt_dir, 'checkpoint.pth')))
 
         inputs, preds, trues = [], [], []
         folder_path = os.path.join(self.args.test_results, setting)
@@ -466,8 +409,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         self.model.eval()
         # metric_collector = create_metric_collector(device=self.device)
         with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(test_loader):
-                outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark)
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(test_loader):
+                outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
 
                 batch_x = batch_x.detach()
                 outputs = outputs.detach()
@@ -545,9 +488,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 pca_components = train_data.pca_components
                 np.save(os.path.join(res_path, 'pca_components.npy'), pca_components)
 
-        print('save configs')
-        args_dict = vars(self.args)
-        with open(os.path.join(res_path, 'config.yaml'), 'w') as yaml_file:
-            yaml.dump(args_dict, yaml_file, default_flow_style=False)
+        if not test or not os.path.exists(os.path.join(res_path, 'config.yaml')):
+            print('save configs')
+            args_dict = vars(self.args)
+            with open(os.path.join(res_path, 'config.yaml'), 'w') as yaml_file:
+                yaml.dump(args_dict, yaml_file, default_flow_style=False)
 
         return

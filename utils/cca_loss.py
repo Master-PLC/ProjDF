@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 
 def cal_corr(X, Y, rank_ratio=1.0, r1=1e-3, r2=1e-3, eps=1e-9, device='cpu', n_retry=3):
@@ -98,13 +99,19 @@ def cal_corr_svd(X, Y, rank_ratio=1.0, r1=1e-3, r2=1e-3, eps=1e-9, device='cpu',
 
 
 def cal_corr_cosine(X, Y, rank_ratio=1.0, r1=1e-3, r2=1e-3, eps=1e-9, device='cpu', n_retry=3):
-    Xbar = X - X.mean(dim=0, keepdim=True)
-    Ybar = Y - Y.mean(dim=0, keepdim=True)
-    X_norm = torch.norm(Xbar, dim=1, keepdim=True)
-    Y_norm = torch.norm(Ybar, dim=1, keepdim=True)
-    X_unit = Xbar / (X_norm + eps)
-    Y_unit = Ybar / (Y_norm + eps)
-    corr = (X_unit * Y_unit).sum(dim=1).mean()
+    corr = F.cosine_similarity(X, Y, dim=-1)
+    corr = corr.mean()
+    return -corr
+
+
+def cal_corr_pearson(X, Y, rank_ratio=1.0, r1=1e-3, r2=1e-3, eps=1e-9, device='cpu', n_retry=3):
+    X_centered = X - X.mean(dim=1, keepdim=True)
+    Y_centered = Y - Y.mean(dim=1, keepdim=True)
+    covariance = (X_centered * Y_centered).mean(dim=1)
+    X_std = X_centered.std(dim=1)
+    Y_std = Y_centered.std(dim=1)
+    corr = covariance / (X_std * Y_std + eps)  # [B]
+    corr = corr.mean()
     return -corr
 
 
@@ -154,6 +161,8 @@ def cca_loss(X, Y, align_type=1, rank_ratio=1.0, device='cpu', r1=1e-3, r2=1e-3,
         cal_corr_func = cal_corr
     elif loss_type == 'cosine':
         cal_corr_func = cal_corr_cosine
+    elif loss_type == 'pearson':
+        cal_corr_func = cal_corr_pearson
     elif loss_type == 'dual':
         cal_corr_func = robust_cca_loss
 
@@ -202,4 +211,39 @@ def cca_loss(X, Y, align_type=1, rank_ratio=1.0, device='cpu', r1=1e-3, r2=1e-3,
         pass
 
     loss = cal_corr_func(X, Y, rank_ratio=1.0, r1=r1, r2=r2, eps=eps, device=device, n_retry=n_retry)
+    return loss
+
+
+
+def channel_decorrelation_loss(X, eps=1e-8, p=1):
+    """
+    计算时序数据各通道间相关性的去相关loss。
+
+    Args:
+        X: [B, T, D]，B为batch，T为时间步，D为通道数
+        eps: 防止除0
+        p: 1为L1范数（绝对值），2为L2范数（平方）
+
+    Returns:
+        loss: 所有通道两两间相关系数的均值（L1或L2）
+    """
+    B, T, D = X.shape
+    X_flat = X.reshape(-1, D)  # [B*T, D]
+    # 中心化
+    X_centered = X_flat - X_flat.mean(dim=0, keepdim=True)  # [B*T, D]
+    # 标准化
+    X_std = X_centered.std(dim=0, keepdim=True) + eps       # [1, D]
+    X_norm = X_centered / X_std                             # [B*T, D]
+    # 相关系数矩阵 [D, D]
+    corr_matrix = (X_norm.T @ X_norm) / (B * T - 1)
+    # 忽略对角线，只统计通道间相关性
+    off_diag_mask = ~torch.eye(D, dtype=torch.bool, device=X.device)
+    off_diag_corr = corr_matrix[off_diag_mask]  # [D*D-D]
+    # L1或L2范数
+    if p == 1:
+        loss = off_diag_corr.abs().mean()
+    elif p == 2:
+        loss = off_diag_corr.pow(2).mean()
+    else:
+        raise ValueError("p must be 1 or 2.")
     return loss

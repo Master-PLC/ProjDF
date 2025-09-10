@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+from typing import Optional, Tuple
+
 import matplotlib.pyplot as plt
 import ot
 import torch
@@ -6,7 +9,7 @@ from ot.backend import get_backend
 from ot.utils import dots, list_to_array
 
 
-def cal_wasserstein(X1, X2, distance, ot_type='sinkhorn', normalize=1, mask_factor=0.01, numItermax=10000, stopThr=1e-4, reg_sk=0.1, reg_m=10):
+def cal_wasserstein(X1, X2, distance, ot_type='sinkhorn', normalize=1, mask_factor=0.01, numItermax=10000, stopThr=1e-4, reg_sk=0.1, reg_m=10, var_weight=1.0, eps=1e-8):
     """
     X1: prediction sequence with shape [B, T, D]
     X2: label sequence with shape [B, T, D]
@@ -140,7 +143,7 @@ def cal_wasserstein(X1, X2, distance, ot_type='sinkhorn', normalize=1, mask_fact
         X2 = X2.abs()
 
         a, b = torch.ones((B,1), device=device, dtype=X1.dtype) / B, torch.ones((B,1), device=device, dtype=X2.dtype) / B
-        loss = ot.gaussian.empirical_bures_wasserstein_distance(X1, X2, reg=reg_sk, ws=a, wt=b)
+        # loss = ot.gaussian.empirical_bures_wasserstein_distance(X1, X2, reg=reg_sk, ws=a, wt=b)
         loss = empirical_bures_wasserstein_distance(X1, X2, reg=reg_sk, ws=a, wt=b)
         loss = loss.mean()
         return loss
@@ -149,14 +152,21 @@ def cal_wasserstein(X1, X2, distance, ot_type='sinkhorn', normalize=1, mask_fact
         #! 去掉rfft, 对each dimension考虑
         a, b = torch.ones((B,1), device=device, dtype=X1.dtype) / B, torch.ones((B,1), device=device, dtype=X2.dtype) / B
 
-        loss = 0
-        for d in range(D):
-            X1_d = X1[..., d]
-            X2_d = X2[..., d]
-            # loss += ot.gaussian.empirical_bures_wasserstein_distance(X1_d, X2_d, reg=reg_sk, ws=a, wt=b)
-            loss += empirical_bures_wasserstein_distance(X1_d, X2_d, reg=reg_sk, ws=a, wt=b)
-        loss = loss / D
-        loss = loss.mean()
+        if ot_type == 'exact':
+            loss = 0
+            for d in range(D):
+                X1_d = X1[..., d]
+                X2_d = X2[..., d]
+                loss += empirical_bures_wasserstein_distance(X1_d, X2_d, reg=reg_sk, ws=a, wt=b, var_weight=var_weight, eps=eps)
+            loss = loss / D
+            loss = loss.mean()
+        elif ot_type == 'upper_bound':
+            X1 = X1.permute(2, 0, 1)  # [D, B, T]
+            X2 = X2.permute(2, 0, 1)  # [D, B, T]
+            a = a.unsqueeze(0).expand(D, -1, -1)  # (D, B, 1)
+            b = b.unsqueeze(0).expand(D, -1, -1)  # (D, B, 1)
+
+            loss = batch_empirical_bures_wasserstein_distance(X1, X2, reg=reg_sk, ws=a, wt=b, var_weight=var_weight, eps=eps)
         return loss
 
     if normalize == 1:
@@ -181,8 +191,61 @@ def cal_wasserstein(X1, X2, distance, ot_type='sinkhorn', normalize=1, mask_fact
     return loss
 
 
+def batch_empirical_bures_wasserstein_distance(
+    xs, xt, reg=1e-6, ws=None, wt=None, bias=True, var_weight=1.0, eps=1e-9
+):
+    """
+    批量计算 Bures-Wasserstein 距离，支持所有维度同时计算
+    输入形状: xs, xt: (D, B, T)
+             ws, wt: (D, B, 1)
+    """
+    D_batch, B, T = xs.shape
+
+    # 计算均值 (D, 1, T)
+    if bias:
+        mxs = torch.matmul(ws.transpose(1, 2), xs) / torch.sum(ws, dim=1, keepdim=True)
+        mxt = torch.matmul(wt.transpose(1, 2), xt) / torch.sum(wt, dim=1, keepdim=True)
+        xs = xs - mxs
+        xt = xt - mxt
+    else:
+        mxs = torch.zeros((D_batch, 1, T), dtype=xs.dtype, device=xs.device)
+        mxt = torch.zeros((D_batch, 1, T), dtype=xt.dtype, device=xt.device)
+
+    # 批量协方差计算 (D, T, T)
+    Cs = torch.matmul((xs * ws).transpose(1, 2), xs) / torch.sum(ws, dim=1, keepdim=True).transpose(1, 2)
+    Cs += reg * torch.eye(T, dtype=xs.dtype, device=xs.device).unsqueeze(0)
+
+    Ct = torch.matmul((xt * wt).transpose(1, 2), xt) / torch.sum(wt, dim=1, keepdim=True).transpose(1, 2)
+    Ct += reg * torch.eye(T, dtype=xt.dtype, device=xt.device).unsqueeze(0)
+
+    # 批量距离计算
+    W_batch = batch_upper_bound_distance(mxs, mxt, Cs, Ct, var_weight=var_weight, eps=eps)
+    return torch.mean(W_batch)  # 对所有维度求均值
+
+
+def batch_upper_bound_distance(ms, mt, Cs, Ct, var_weight=1.0, eps=1e-6):
+    """
+    批量计算 Bures-Wasserstein 距离的上界
+    输入形状: ms, mt: (D, 1, T)
+             Cs, Ct: (D, T, T)
+    输出形状: (D,)
+    """
+    # 计算均值差平方范数 (D,)
+    norm_diff_sq = torch.sum((ms - mt) ** 2, dim=(-1, -2))
+
+    # 计算 B 项 (D,)
+    trace_Cs = torch.diagonal(Cs, dim1=-2, dim2=-1).sum(dim=-1)
+    trace_Ct = torch.diagonal(Ct, dim1=-2, dim2=-1).sum(dim=-1)
+    trace_CsCt = torch.diagonal(torch.matmul(Cs, Ct), dim1=-2, dim2=-1).sum(dim=-1)
+
+    B = trace_Cs + trace_Ct - 2 * torch.sqrt(torch.clip(trace_CsCt, min=eps))
+    W = torch.sqrt(torch.clip(norm_diff_sq + var_weight * B, min=eps))
+
+    return W
+
+
 def empirical_bures_wasserstein_distance(
-    xs, xt, reg=1e-6, ws=None, wt=None, bias=True, log=False
+    xs, xt, reg=1e-6, ws=None, wt=None, bias=True, var_weight=1.0, eps=1e-9
 ):
     r"""copy from pot library"""
     xs, xt = list_to_array(xs, xt)
@@ -209,42 +272,29 @@ def empirical_bures_wasserstein_distance(
     Cs = nx.dot((xs * ws).T, xs) / nx.sum(ws) + reg * nx.eye(d, type_as=xs)
     Ct = nx.dot((xt * wt).T, xt) / nx.sum(wt) + reg * nx.eye(d, type_as=xt)
 
-    if log:
-        W, log = bures_wasserstein_distance(mxs, mxt, Cs, Ct, log=log, eps=reg)
-        log["Cs"] = Cs
-        log["Ct"] = Ct
-        return W, log
-    else:
-        W = bures_wasserstein_distance(mxs, mxt, Cs, Ct, eps=reg)
-        return W
+    W = bures_wasserstein_distance(mxs, mxt, Cs, Ct, eps=eps, var_weight=var_weight)
+    return W
 
 
-def bures_wasserstein_distance(ms, mt, Cs, Ct, log=False, eps=1e-6, method='svd_stable'):
+def cal_distance(ms, mt, Cs, Ct, nx, sqrtm_func, eps=1e-6, var_weight=1.0):
+    Cs12 = sqrtm_func(Cs, eps=eps)
+    B = nx.trace(Cs + Ct - 2 * sqrtm_func(dots(Cs12, Ct, Cs12), eps=eps))
+    W = nx.sqrt(nx.maximum(nx.norm(ms - mt) ** 2 + var_weight * B, 0))
+    return W
+
+
+def bures_wasserstein_distance(ms, mt, Cs, Ct, eps=1e-6, var_weight=1.0):
     r"""copy from pot library"""
     ms, mt, Cs, Ct = list_to_array(ms, mt, Cs, Ct)
     nx = get_backend(ms, mt, Cs, Ct)
 
-    def cal_distance(ms, mt, Cs, Ct, nx, sqrtm_func, log=False, eps=1e-6):
-        Cs12 = sqrtm_func(Cs, eps=eps)
-        B = nx.trace(Cs + Ct - 2 * sqrtm_func(dots(Cs12, Ct, Cs12), eps=eps))
-        W = nx.sqrt(nx.maximum(nx.norm(ms - mt) ** 2 + B, 0))
-        if torch.isnan(W) or torch.isinf(W):
-            raise ValueError("nan/inf distance")
-
-        if log:
-            log = {}
-            log["Cs12"] = Cs12
-            return W, log
-        else:
-            return W
-
     try:
-        return cal_distance(ms, mt, Cs, Ct, nx, sqrtm_svd_stable, log=log, eps=eps)
+        return cal_distance(ms, mt, Cs, Ct, nx, sqrtm_svd_stable, eps=eps, var_weight=var_weight)
     except Exception:
         try:
-            return cal_distance(ms, mt, Cs, Ct, nx, sqrtm, log=log, eps=eps)
+            return cal_distance(ms, mt, Cs, Ct, nx, sqrtm, eps=eps, var_weight=var_weight)
         except Exception:
-            return cal_distance(ms, mt, Cs, Ct, nx, sqrtm_newton_schulz_stable, log=log, eps=eps)
+            return cal_distance(ms, mt, Cs, Ct, nx, sqrtm_newton_schulz_stable, eps=eps, var_weight=var_weight)
 
 
 def sqrtm(a, *args, **kwargs):
@@ -256,14 +306,14 @@ def sqrtm(a, *args, **kwargs):
     return torch.einsum("...jk,...kl->...jl", Q, torch.transpose(V, -1, -2))
 
 
-def sqrtm_svd(a, eps=1e-8, *args, **kwargs):
+def sqrtm_svd(a, eps=1e-9, *args, **kwargs):
     U, S, Vh = torch.linalg.svd(a)
     S = torch.clamp(S, min=eps)
     S_root = torch.sqrt(S)
     return (U * S_root) @ U.t()
 
 
-def sqrtm_svd_stable(A: torch.Tensor, eps: float = 1e-8, dtype: torch.dtype = torch.float64, *args, **kwargs):
+def sqrtm_svd_stable(A: torch.Tensor, eps: float = 1e-9, dtype: torch.dtype = torch.float64, *args, **kwargs):
     """稳定SVD法（对称化+双精度+奇异值截断）"""
     A = (A + A.transpose(-1, -2)) * 0.5  # 对称化
     A64 = A.to(dtype)  # 转double提升稳定性
@@ -319,3 +369,226 @@ def sqrtm_newton_schulz_stable(A: torch.Tensor, num_iters: int = 20, eps: float 
     # 5. 恢复尺度（sqrt(A) = sqrt(norm) * Y）
     sqrtA = torch.sqrt(norm) * Y
     return sqrtA
+
+
+@dataclass
+class LowRankCov:
+    V: torch.Tensor        # (T, r)
+    sigma: torch.Tensor    # (r,)
+    reg: float
+    sqrt_reg: float
+    a: torch.Tensor        # (r,) = sqrt(sigma^2 + reg) - sqrt_reg
+    mean: torch.Tensor     # (T,)
+    trace: torch.Tensor    # Tr(C) = reg*T + sum(sigma^2)
+
+
+def _weighted_center(X: torch.Tensor, w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    wn = w / w.sum()
+    mean = (wn[:, None] * X).sum(0)
+    return X - mean, mean
+
+
+def lowrank_cov_from_samples(
+    X: torch.Tensor,
+    w: Optional[torch.Tensor],
+    reg: float = 1e-6,
+    center: bool = True,
+    eig_tol_ratio: float = 1e-14
+) -> LowRankCov:
+    B, T = X.shape
+    device, dtype = X.device, X.dtype
+    if w is None:
+        w = torch.ones(B, device=device, dtype=dtype)
+    else:
+        w = w.to(device=device, dtype=dtype)
+    w = torch.clamp(w, min=0)
+    if w.sum() <= 0:
+        raise ValueError("Weights sum <= 0")
+    if center:
+        Xc, mean = _weighted_center(X, w)
+    else:
+        Xc = X
+        mean = torch.zeros(T, device=device, dtype=dtype)
+
+    wn = w / w.sum()
+    Y = Xc * torch.sqrt(wn)  # (B,T)
+
+    # Gram
+    G = Y @ Y.T
+    G = 0.5 * (G + G.T)
+
+    evals, U = torch.linalg.eigh(G)
+    evals = torch.clamp(evals, min=0)
+    lam_max = evals.max()
+    if lam_max == 0:
+        return LowRankCov(
+            V=torch.zeros(T, 0, device=device, dtype=dtype),
+            sigma=torch.zeros(0, device=device, dtype=dtype),
+            reg=reg,
+            sqrt_reg=reg**0.5,
+            a=torch.zeros(0, device=device, dtype=dtype),
+            mean=mean,
+            trace=torch.tensor(reg*T, device=device, dtype=dtype)
+        )
+    tol = lam_max * eig_tol_ratio
+    keep = evals > tol
+    if keep.sum() == 0:
+        return LowRankCov(
+            V=torch.zeros(T, 0, device=device, dtype=dtype),
+            sigma=torch.zeros(0, device=device, dtype=dtype),
+            reg=reg,
+            sqrt_reg=reg**0.5,
+            a=torch.zeros(0, device=device, dtype=dtype),
+            mean=mean,
+            trace=torch.tensor(reg*T, device=device, dtype=dtype)
+        )
+    lam = evals[keep]
+    U_r = U[:, keep]
+    sigma = torch.sqrt(lam)
+    # V 正交（理论上），数值上可选再正交
+    V = (Y.T @ U_r) / sigma
+    # 轻微再正交（提升精度）
+    V, _ = torch.linalg.qr(V)  # 注意：再正交后 sigma 不再直接对应对角，需要重估投影谱
+    # 重新估 sigma：在新 V 上投影 Cs - reg I
+    # Cs - reg I = Y^T Y = (V S)(V S)^T, 我们可以再计算 SVD of (Y @ V)
+    YV = Y @ V            # (B, r_new)
+    # 现在 YV YV^T 的特征值 = diag(sigma_new^2)
+    # 直接对 (YV^T YV) 做特征分解即可
+    M_small = YV.T @ YV
+    M_small = 0.5 * (M_small + M_small.T)
+    s_eigs, U_small = torch.linalg.eigh(M_small)
+    s_eigs = torch.clamp(s_eigs, min=0)
+    sigma_new = torch.sqrt(s_eigs)
+    # 更新 V 到 “更正交+对角表示” 基
+    V = V @ U_small
+    sigma = sigma_new
+
+    sqrt_reg = reg**0.5
+    a = torch.sqrt(sigma**2 + reg) - sqrt_reg
+    trace_C = torch.tensor(reg * T, device=device, dtype=dtype) + (sigma**2).sum()
+    return LowRankCov(
+        V=V, sigma=sigma, reg=reg, sqrt_reg=sqrt_reg, a=a,
+        mean=mean, trace=trace_C
+    )
+
+
+def dual_bures_wasserstein_distance(
+    Xs: torch.Tensor,
+    Xt: torch.Tensor,
+    ws: Optional[torch.Tensor] = None,
+    wt: Optional[torch.Tensor] = None,
+    reg: float = 1e-6,
+    eps: float = 1e-9,
+    bias: bool = True,
+    var_weight: float = 1.0,
+    eig_tol_ratio: float = 1e-14,
+    snap_rel: float = 1e-10,
+    snap_abs: float = 1e-22
+) -> torch.Tensor:
+    """
+    代数子空间法：避免 T×k 乘法带来的误差，在 B<<T 场景下提升精度。
+    """
+    cov_s = lowrank_cov_from_samples(Xs, ws, reg=reg, center=bias, eig_tol_ratio=eig_tol_ratio)
+    cov_t = lowrank_cov_from_samples(Xt, wt, reg=reg, center=bias, eig_tol_ratio=eig_tol_ratio)
+    T = Xs.shape[1]
+    mean_diff_sq = ((cov_s.mean - cov_t.mean)**2).sum()
+
+    if cov_s.V.numel()==0 and cov_t.V.numel()==0:
+        return torch.sqrt(torch.clamp(mean_diff_sq, min=0))
+
+    Vs, Vt = cov_s.V, cov_t.V
+    rs, rt = Vs.shape[1], Vt.shape[1]
+
+    # 构造 Vt 在 Vs 正交补上的部分
+    if rt == 0:
+        # 只有 Vs 低秩
+        # 这时 span = Vs，Ct = reg I，K_sub = Cs^{1/2} * reg I * Cs^{1/2} restricted
+        # 直接走统一分支也可以
+        pass
+
+    if rt > 0 and rs > 0:
+        # 去掉 Vs 分量
+        proj = Vs @ (Vs.T @ Vt)
+        R_raw = Vt - proj
+    else:
+        R_raw = Vt.clone()
+
+    if R_raw.numel() > 0:
+        # 对 R_raw 做 QR
+        W, R_up = torch.linalg.qr(R_raw, mode='reduced')  # Vt_perp = W
+        r_t_perp = W.shape[1]
+    else:
+        W = torch.zeros_like(Vt)[:,:0]
+        R_up = torch.zeros(0,0, device=Vt.device, dtype=Vt.dtype)
+        r_t_perp = 0
+
+    # Vt = Vs C + W R_up
+    if rt > 0 and rs > 0:
+        C = Vs.T @ Vt  # (rs, rt)
+    else:
+        C = torch.zeros(rs, rt, device=Vs.device, dtype=Vs.dtype)
+
+    # 在基 B = [Vs, W] 上的维度 k
+    k = rs + r_t_perp
+
+    # 构造 Ct_sub
+    regI_k = reg * torch.eye(k, device=Vs.device, dtype=Vs.dtype)
+
+    # D_t = diag(t_t^2)
+    D_t = (cov_t.sigma**2)  # (rt,)
+
+    # 拆出 Vt 的两个块: Vs 部分  C,  W 部分 R_up
+    # Block 形式:
+    # [Vs^T; W^T] Vt = [ C ; R_up ]
+    # 因此 Ct_sub = reg I_k + [C;R_up] D_t [C;R_up]^T
+    if rt > 0:
+        CD = C * D_t  if C.numel()>0 else C
+        RD = R_up * D_t if R_up.numel()>0 else R_up
+        # 上左
+        TL = CD @ C.T if rt>0 and rs>0 else torch.zeros(rs, rs, device=Vs.device, dtype=Vs.dtype)
+        # 上右
+        TR = CD @ R_up.T if (rs>0 and r_t_perp>0) else torch.zeros(rs, r_t_perp, device=Vs.device, dtype=Vs.dtype)
+        # 下左
+        BL = TR.T
+        # 下右
+        BR = RD @ R_up.T if r_t_perp>0 else torch.zeros(r_t_perp, r_t_perp, device=Vs.device, dtype=Vs.dtype)
+        Ct_sub = regI_k.clone()
+        if rs>0:
+            Ct_sub[:rs,:rs] += TL
+        if rs>0 and r_t_perp>0:
+            Ct_sub[:rs, rs:] += TR
+            Ct_sub[rs:, :rs] += BL
+        if r_t_perp>0:
+            Ct_sub[rs:, rs:] += BR
+    else:
+        Ct_sub = regI_k.clone()
+
+    # Cs^{1/2} 在基 B 中： sqrt_reg I_k + diag(d_s, 0)
+    # d_s = sqrt(s_s^2 + reg) - sqrt_reg
+    if rs>0:
+        Cs_half_sub = cov_s.sqrt_reg * torch.eye(k, device=Vs.device, dtype=Vs.dtype)
+        Cs_half_sub[:rs,:rs] += torch.diag(cov_s.a)  # a = sqrt(s^2+reg) - sqrt_reg
+    else:
+        Cs_half_sub = cov_s.sqrt_reg * torch.eye(k, device=Vs.device, dtype=Vs.dtype)
+
+    # K_sub = Cs_half_sub @ Ct_sub @ Cs_half_sub
+    K_sub = Cs_half_sub @ (Ct_sub @ Cs_half_sub)
+    K_sub = 0.5 * (K_sub + K_sub.T)
+
+    evals, _ = torch.linalg.eigh(K_sub)
+    evals = torch.clamp(evals, min=0)
+
+    # 对齐接近 reg^2 的特征值 (避免 sqrt 放大误差)
+    reg_sq = reg * reg
+    if reg_sq > 0:
+        diff = (evals - reg_sq).abs()
+        mask = (diff <= snap_rel * reg_sq) | (diff <= snap_abs)
+        evals = torch.where(mask, torch.full_like(evals, reg_sq), evals)
+
+    trace_small = torch.sqrt(evals).sum()
+    trace_cross = trace_small + (T - k) * reg  # 补空间 reg
+
+    B_term = cov_s.trace + cov_t.trace - 2.0 * trace_cross
+    B_term = torch.clamp(B_term, min=0)
+    dist_sq = mean_diff_sq + var_weight * B_term
+    return torch.sqrt(torch.clamp(dist_sq, min=0))

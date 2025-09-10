@@ -11,8 +11,8 @@ from exp.exp_basic import Exp_Basic
 from torch.utils.data import DataLoader
 from utils.metrics import metric
 from utils.metrics_torch import create_metric_collector, metric_torch
-from utils.tools import EarlyStopping, Scheduler, clip_grads, disable_grad, enable_grad, log_heatmap, split_dataset, \
-    split_dataset_with_overlap, visual
+from utils.tools import EarlyStopping, Scheduler, disable_grad, enable_grad, log_heatmap, split_dataset_with_overlap, \
+    visual
 
 warnings.filterwarnings('ignore')
 
@@ -26,29 +26,24 @@ class CovarianceMatrix(nn.Module):
         self.eps = 1e-6
         self.auxi_loss = args.auxi_loss
 
-    def _get_L(self, params=None):
-        if params is None:
-            L_param = self.L_param
-        else:
-            L_param = params['L_param']
-
+    def _get_L(self):
         # 取下三角并在对角线加 eps，确保正定
-        L = torch.tril(L_param)
+        L = torch.tril(self.L_param)
         diag = torch.diag_embed(torch.diagonal(L, dim1=-2, dim2=-1) + self.eps)
         L = L - torch.diag_embed(torch.diagonal(L, dim1=-2, dim2=-1)) + diag
         return L
 
-    def forward(self, params=None):
-        L = self._get_L(params)
+    def forward(self):
+        L = self._get_L()
         return L @ L.transpose(-1, -2)               # Σ = L Lᵀ
 
-    def get_inverse(self, params=None):
-        L = self._get_L(params)
+    def get_inverse(self):
+        L = self._get_L()
         A = L @ L.transpose(-1, -2)
         return torch.linalg.inv(A)
 
-    def get_loss(self, pred, target, params=None):
-        L = self._get_L(params)  # [P, P] 下三角矩阵
+    def get_loss(self, pred, target):
+        L = self._get_L()  # [P, P] 下三角矩阵
 
         E = pred - target  # [B, P, D]
         E_flat = E.permute(0, 2, 1).reshape(-1, self.pred_len)  # [B*D, P]
@@ -76,7 +71,7 @@ class CovarianceMatrix(nn.Module):
             # reg_loss = torch.norm(fast_A() - I, p='fro') ** 2
             # loss += self.args.reg_lambda * reg_loss
 
-            Sigma = self.forward(params)  # [P, P]
+            Sigma = self.forward()  # [P, P]
             off_diag = Sigma - torch.diag_embed(torch.diagonal(Sigma))
             reg_loss = torch.norm(off_diag, p='fro') ** 2
             loss += self.args.reg_lambda * reg_loss
@@ -90,17 +85,7 @@ def get_projection(A):
     return Am.detach().cpu().numpy()  # 返回 numpy 数组
 
 
-def get_param_dict(module):
-    # 返回 OrderedDict，适用于 functional forward
-    return dict(module.named_parameters())
-
-
-def update_param_dict(param_dict, grads, lr):
-    # param_dict: dict key->tensor, grads: dict key->grad
-    return {k: v - lr * grads[k] for k, v in param_dict.items()}
-
-
-class Exp_Long_Term_Forecast_META(Exp_Basic):
+class Exp_Long_Term_Forecast_META_Reptile(Exp_Basic):
     def __init__(self, args):
         super().__init__(args)
         self.pred_len = args.pred_len
@@ -109,7 +94,6 @@ class Exp_Long_Term_Forecast_META(Exp_Basic):
         self.lr = args.learning_rate
         self.inner_lr = args.inner_lr
         self.meta_lr = args.meta_lr
-        self.first_order = args.first_order
 
         self.A = CovarianceMatrix(self.args).to(self.device)
         disable_grad(self.A)  # A is not trainable in the beginning
@@ -142,43 +126,47 @@ class Exp_Long_Term_Forecast_META(Exp_Basic):
         self.A.train()
         return total_loss, total_cov_loss
 
-    def inner_loop(self, task_id, support_loader, query_loader):
+    def inner_loop(self, task_id, task_loader):
         losses = []
 
-        fast_params = get_param_dict(self.A)
+        fast_A = CovarianceMatrix(self.args).to(self.device)
+        fast_A.load_state_dict(self.A.state_dict())  # copy A to fast_A
+        fast_A.train()
+        optimizer = self._select_optimizer(fast_A, lr=self.inner_lr, optim_type=self.args.meta_optim_type)
+
         for k in range(self.n_inner):
-            bx, by, bx_mark, by_mark, by_cycle = next(support_loader)
+            bx, by, bx_mark, by_mark, by_cycle = next(task_loader)
             with torch.no_grad():
                 outputs, batch_y, _ = self.forward_step(bx, by, bx_mark, by_mark, by_cycle)
 
-            loss = self.A.get_loss(outputs, batch_y, params=fast_params)
-            grads = torch.autograd.grad(loss, fast_params.values(), create_graph=not self.first_order)
-            grads = clip_grads(grads, self.args.max_norm)
-            grads_dict = {k: g for k, g in zip(fast_params.keys(), grads)}
-            fast_params = update_param_dict(fast_params, grads_dict, self.inner_lr)
+            optimizer.zero_grad()
+            loss = fast_A.get_loss(outputs, batch_y)
+            loss.backward()
+
+            nn.utils.clip_grad_norm_(fast_A.parameters(), max_norm=self.args.max_norm)
+            optimizer.step()
 
             losses.append(loss.item())
 
-        bx, by, bx_mark, by_mark, by_cycle = next(query_loader)
-        with torch.no_grad():
-            outputs, batch_y, _ = self.forward_step(bx, by, bx_mark, by_mark, by_cycle)
-        loss_q = self.A.get_loss(outputs, batch_y, params=fast_params)
-        return np.mean(losses), loss_q
+        fast_state = fast_A.state_dict()
+        return np.mean(losses), fast_state
+
+    def meta_update(self, task_states):
+        for i, (name, p) in enumerate(self.A.named_parameters()):
+            meta_grad = torch.zeros_like(p)
+            for task_state in task_states:
+                meta_grad += (task_state[name] - p).detach()
+            if p.grad is None:
+                p.grad = torch.zeros_like(p)
+            p.grad.data.add_(meta_grad / len(task_states))
 
     def initialize_meta_tasks(self, train_data):
         self.meta_learning = False
 
         task_data_list = split_dataset_with_overlap(train_data, self.args.num_tasks, self.args.overlap_ratio)
-        task_data_list = [split_dataset(task_data, r=0.7) for task_data in task_data_list]
-
-        support_data_list = [td[0] for td in task_data_list]
-        support_loader_list = [DataLoader(support_data, batch_size=self.args.auxi_batch_size, shuffle=True) for support_data in support_data_list]
-        support_loader_list = [cycle(support_loader) for support_loader in support_loader_list]
-
-        query_data_list = [td[1] for td in task_data_list]
-        query_loader_list = [DataLoader(query_data, batch_size=self.args.auxi_batch_size, shuffle=True) for query_data in query_data_list]
-        query_loader_list = [cycle(query_loader) for query_loader in query_loader_list]
-        return support_loader_list, query_loader_list
+        task_loader_list = [DataLoader(task_data, batch_size=self.args.auxi_batch_size, shuffle=True) for task_data in task_data_list]
+        task_loader_list = [cycle(task_loader) for task_loader in task_loader_list]
+        return task_loader_list
 
     def check_meta_learning(self):
         if self.args.fixed_step and self.step > self.args.fixed_step and not self.meta_learning:
@@ -188,7 +176,7 @@ class Exp_Long_Term_Forecast_META(Exp_Basic):
 
     def train(self, setting, prof=None):
         train_data, train_loader = self._get_data(flag='train')
-        support_loader_list, query_loader_list = self.initialize_meta_tasks(train_data)
+        task_loader_list = self.initialize_meta_tasks(train_data)
         vali_data, vali_loader = self._get_data(flag='val')
 
         path = os.path.join(self.args.checkpoints, setting)
@@ -212,7 +200,7 @@ class Exp_Long_Term_Forecast_META(Exp_Basic):
         for epoch in range(self.args.train_epochs):
             self.epoch = epoch + 1
             iter_count = 0
-            train_loss, train_loss_mse, support_loss, query_loss = [], [], [], []
+            train_loss, train_loss_mse, meta_loss = [], [], []
 
             lr_cur = scheduler.get_lr()
             self.writer.add_scalar(f'{self.pred_len}/train/lr', lr_cur, self.epoch)
@@ -246,28 +234,23 @@ class Exp_Long_Term_Forecast_META(Exp_Basic):
                     self.A.train()
 
                     A_optim.zero_grad()
-                    support_losses, query_losses = [], []
-                    for k, (support_loader, query_loader) in enumerate(zip(support_loader_list, query_loader_list)):
-                        loss_s, loss_q = self.inner_loop(k, support_loader, query_loader)
-                        support_losses.append(loss_s)
-                        query_losses.append(loss_q)
-                    query_l = torch.stack(query_losses).mean()
-                    query_l.backward()
+                    task_losses, task_states = [], []
+                    for k, task_loader in enumerate(task_loader_list):
+                        task_loss, task_state = self.inner_loop(k, task_loader)
+                        task_losses.append(task_loss)
+                        task_states.append(task_state)
+                    self.meta_update(task_states)
                     A_optim.step()
 
-                    query_l = query_l.item()
-                    support_l = np.mean(support_losses)
+                    meta_l = np.mean(task_losses)
                 else:
-                    query_l = 1e4
-                    support_l = 1e4
+                    meta_l = 1e4
 
-                query_loss.append(query_l)
-                support_loss.append(support_l)
-                self.writer.add_scalar(f'{self.pred_len}/train_iter/loss_query', query_l, self.step)
-                self.writer.add_scalar(f'{self.pred_len}/train_iter/loss_support', support_l, self.step)
+                meta_loss.append(meta_l)
+                self.writer.add_scalar(f'{self.pred_len}/train_iter/loss_meta', meta_l, self.step)
 
                 if (i + 1) % 100 == 0:
-                    print("\titers: {}, epoch: {} | loss: {:.7f}, query loss: {:.7f}, support loss: {:.7f}".format(i + 1, self.epoch, loss.item(), query_l, support_l))
+                    print("\titers: {}, epoch: {} | loss: {:.7f}, meta loss: {:.7f}".format(i + 1, self.epoch, loss.item(), meta_l))
                     cost_time = time.time() - time_now
                     speed = cost_time / iter_count
                     left_time = speed * ((self.args.train_epochs - epoch) * train_steps - i)
@@ -283,21 +266,19 @@ class Exp_Long_Term_Forecast_META(Exp_Basic):
             print("Epoch: {} cost time: {}".format(self.epoch, time.time() - epoch_time))
             train_loss = np.average(train_loss)
             train_loss_mse = np.average(train_loss_mse)
-            query_loss = np.average(query_loss)
-            support_loss = np.average(support_loss)
+            meta_loss = np.average(meta_loss)
             valid_loss_mse, valid_loss_cov = self.vali(vali_data, vali_loader, criterion)
 
             self.writer.add_scalar(f'{self.pred_len}/train/loss_cov', train_loss, self.epoch)
             self.writer.add_scalar(f'{self.pred_len}/train/loss_mse', train_loss_mse, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/train/loss_query', query_loss, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/train/loss_support', support_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss_meta', meta_loss, self.epoch)
             self.writer.add_scalar(f'{self.pred_len}/vali/loss_cov', valid_loss_cov, self.epoch)
             self.writer.add_scalar(f'{self.pred_len}/vali/loss_mse', valid_loss_mse, self.epoch)
             log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/cov_mat', self.epoch)
 
             print(
-                "Epoch: {}, Steps: {} | Train Loss Cov: {:.7f}, MSE: {:.7f}, Query: {:.7f} | Vali Loss Cov: {:.7f}, MSE: {:.7f}".format(
-                    self.epoch, self.step, train_loss, train_loss_mse, query_loss, valid_loss_cov, valid_loss_mse
+                "Epoch: {}, Steps: {} | Train Loss Cov: {:.7f}, MSE: {:.7f}, Meta: {:.7f} | Vali Loss Cov: {:.7f}, MSE: {:.7f}".format(
+                    self.epoch, self.step, train_loss, train_loss_mse, meta_loss, valid_loss_cov, valid_loss_mse
                 )
             )
             other_to_save = {'A': self.A}

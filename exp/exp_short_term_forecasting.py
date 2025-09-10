@@ -13,6 +13,7 @@ import torch.nn as nn
 from data_provider.data_factory import data_provider
 from data_provider.m4 import M4Meta
 from exp.exp_basic import Exp_Basic
+from models import MODEL_REQUIRES_CYCLE
 from torch import optim
 from utils.fft_ot import cal_wasserstein
 from utils.losses import mape_loss, mase_loss, smape_loss
@@ -95,7 +96,7 @@ class Exp_Short_Term_Forecast(Exp_Basic):
 
             self.model.train()
             epoch_time = time.time()
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(train_loader):
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(train_loader):
                 self.step += 1
                 iter_count += 1
                 model_optim.zero_grad()
@@ -373,9 +374,10 @@ class Exp_Short_Term_Forecast(Exp_Basic):
 
         self.writer.close()
 
-        print('save configs')
-        args_dict = vars(self.args)
-        with open(os.path.join(res_path, 'config.yaml'), 'w') as yaml_file:
-            yaml.dump(args_dict, yaml_file, default_flow_style=False)
+        if not test or not os.path.exists(os.path.join(res_path, 'config.yaml')):
+            print('save configs')
+            args_dict = vars(self.args)
+            with open(os.path.join(res_path, 'config.yaml'), 'w') as yaml_file:
+                yaml.dump(args_dict, yaml_file, default_flow_style=False)
 
         return

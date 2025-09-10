@@ -1,10 +1,13 @@
-from . import (FBM_L, FBM_NL, FBM_NP, Fredformer, LSTM, MICN, TCN, AdaMSHyper, Autoformer,
-               Crossformer, DLinear, ETSformer, FEDformer, FiLM, FreTS,
-               Informer, Koopa, LightTS, MultiPatchFormer,
-               Nonstationary_Transformer, PatchTST, PAttn, Pyraformer,
-               Reformer, SCINet, SegRNN, SimpleTM, TemporalFusionTransformer, TiDE, TimeKAN,
-               TimeMixer, TimesNet, TimeXer, Transformer, TSMixer, WPMixer,
-               iTransformer, CycleNet, PDF)
+from . import FBM_L, FBM_NL, FBM_NP, LSTM, MICN, PDF, TCN, AdaMSHyper, Autoformer, Crossformer, CycleNet, DLinear, \
+    ETSformer, FEDformer, FiLM, Fredformer, FreTS, Informer, Koopa, LightTS, MultiPatchFormer, \
+    Nonstationary_Transformer, PatchTST, PAttn, Pyraformer, Reformer, SCINet, SegRNN, SimpleTM, \
+    TemporalFusionTransformer, TiDE, TimeBridge, TimeKAN, TimeMixer, TimesNet, TimeXer, TQNet, Transformer, TSMixer, \
+    WPMixer, iTransformer
+
+MODEL_REQUIRES_CYCLE = [
+    'CycleNet',
+    'TQNet',
+]
 
 MODEL_DICT = {
     'AdaMSHyper': AdaMSHyper,
@@ -45,5 +48,7 @@ MODEL_DICT = {
     'TSMixer': TSMixer,
     'WPMixer': WPMixer,
     'CycleNet': CycleNet,
-    'PDF': PDF
+    'PDF': PDF,
+    'TQNet': TQNet,
+    'TimeBridge': TimeBridge,
 }

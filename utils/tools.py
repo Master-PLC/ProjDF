@@ -171,21 +171,24 @@ class EarlyStopping:
             print(f'Validation loss is NaN or Inf. EarlyStopping counter: \033[91m{self.counter} out of {self.patience}\033[0m')
             if self.counter >= self.patience:
                 self.early_stop = True
-            return
+            return False
 
         score = -val_loss
         if self.best_score is None:
             self.best_score = score
             self.save_checkpoint(val_loss, model, path, **kwargs)
+            return True
         elif score < self.best_score + self.delta:
             self.counter += 1
             print(f'EarlyStopping counter: \033[91m{self.counter} out of {self.patience}\033[0m')
             if self.counter >= self.patience:
                 self.early_stop = True
+            return False
         else:
             self.best_score = score
             self.save_checkpoint(val_loss, model, path, **kwargs)
             self.counter = 0
+            return True
 
     def save_checkpoint(self, val_loss, model, path, **kwargs):
         if self.verbose:
@@ -326,3 +329,24 @@ def split_dataset_with_overlap(dataset, n, r):
             end = length
         splits.append(Subset(dataset, list(range(start, end))))
     return splits
+
+
+def split_dataset(dataset, r):
+    """
+    将 dataset 分成两份，比例为 r:(1-r)。
+    返回 List[Subset]，每个 Subset 可直接喂 DataLoader。
+    """
+    length = len(dataset)
+    if not (0 < r < 1):
+        raise ValueError("r 必须在 (0, 1) 范围内")
+
+    len1 = int(length * r)
+    return Subset(dataset, list(range(0, len1))), Subset(dataset, list(range(len1, length)))
+
+
+def clip_grads(grads, max_norm):
+    total_norm = torch.norm(torch.stack([g.norm() for g in grads]))
+    if total_norm > max_norm:
+        scale = max_norm / (total_norm + 1e-6)
+        grads = [g * scale for g in grads]
+    return grads

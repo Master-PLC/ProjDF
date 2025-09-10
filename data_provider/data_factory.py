@@ -1,41 +1,29 @@
-from data_provider.data_loader import Dataset_Custom, Dataset_Custom_CCA, Dataset_Custom_CCA_Cycle, \
-    Dataset_Custom_Cycle, Dataset_Custom_FA, Dataset_Custom_Fourier, Dataset_Custom_ICA, Dataset_Custom_PCA, \
-    Dataset_Custom_RobustICA, Dataset_Custom_RobustPCA, Dataset_Custom_SVD, Dataset_ETT_hour, Dataset_ETT_hour_CCA, \
-    Dataset_ETT_hour_CCA_Cycle, Dataset_ETT_hour_Cycle, Dataset_ETT_hour_Fourier, Dataset_ETT_hour_PCA, \
-    Dataset_ETT_hour_Trend, Dataset_ETT_minute, Dataset_ETT_minute_CCA, Dataset_ETT_minute_CCA_Cycle, \
-    Dataset_ETT_minute_Cycle, Dataset_ETT_minute_Fourier, Dataset_ETT_minute_PCA, Dataset_M4, Dataset_M4_CCA, \
-    Dataset_M4_PCA, Dataset_PEMS, Dataset_PEMS_CCA, Dataset_PEMS_CCA_Cycle, Dataset_PEMS_Cycle, Dataset_PEMS_PCA, \
-    Dataset_Solar, Dataset_SRU, MSLSegLoader, PSMSegLoader, SMAPSegLoader, SMDSegLoader, SWATSegLoader, UEAloader
+from data_provider.data_loader import Dataset_Custom, Dataset_Custom_CCA, Dataset_Custom_FA, Dataset_Custom_Fourier, \
+    Dataset_Custom_ICA, Dataset_Custom_PCA, Dataset_Custom_RobustICA, Dataset_Custom_RobustPCA, Dataset_Custom_SVD, \
+    Dataset_ETT_hour, Dataset_ETT_hour_CCA, Dataset_ETT_hour_Fourier, Dataset_ETT_hour_PCA, Dataset_ETT_hour_Trend, \
+    Dataset_ETT_minute, Dataset_ETT_minute_CCA, Dataset_ETT_minute_Fourier, Dataset_ETT_minute_PCA, Dataset_M4, \
+    Dataset_M4_CCA, Dataset_M4_PCA, Dataset_PEMS, Dataset_PEMS_CCA, Dataset_PEMS_PCA, Dataset_Solar, Dataset_SRU, \
+    MSLSegLoader, PSMSegLoader, SMAPSegLoader, SMDSegLoader, SWATSegLoader, UEAloader
 from data_provider.uea import collate_fn
 from torch.utils.data import DataLoader
 
 data_dict = {
     'ETTh1': Dataset_ETT_hour,
-    'ETTh1_CCA_Cycle': Dataset_ETT_hour_CCA_Cycle,
-    'ETTh1_Cycle': Dataset_ETT_hour_Cycle,
     'ETTh1_Fourier': Dataset_ETT_hour_Fourier,
     'ETTh1_Trend': Dataset_ETT_hour_Trend,
     'ETTh1_PCA': Dataset_ETT_hour_PCA,
     'ETTh1_CCA': Dataset_ETT_hour_CCA,
     'ETTh2': Dataset_ETT_hour,
-    'ETTh2_CCA_Cycle': Dataset_ETT_hour_CCA_Cycle,
-    'ETTh2_Cycle': Dataset_ETT_hour_Cycle,
     'ETTh2_PCA': Dataset_ETT_hour_PCA,
     'ETTh2_CCA': Dataset_ETT_hour_CCA,
     'ETTm1': Dataset_ETT_minute,
-    'ETTm1_CCA_Cycle': Dataset_ETT_minute_CCA_Cycle,
-    'ETTm1_Cycle': Dataset_ETT_minute_Cycle,
     'ETTm1_Fourier': Dataset_ETT_minute_Fourier,
     'ETTm1_PCA': Dataset_ETT_minute_PCA,
     'ETTm1_CCA': Dataset_ETT_minute_CCA,
     'ETTm2': Dataset_ETT_minute,
-    'ETTm2_CCA_Cycle': Dataset_ETT_minute_CCA_Cycle,
-    'ETTm2_Cycle': Dataset_ETT_minute_Cycle,
     'ETTm2_PCA': Dataset_ETT_minute_PCA,
     'ETTm2_CCA': Dataset_ETT_minute_CCA,
     'custom': Dataset_Custom,
-    'custom_CCA_Cycle': Dataset_Custom_CCA_Cycle,
-    'custom_Cycle': Dataset_Custom_Cycle,
     'custom_Fourier': Dataset_Custom_Fourier,
     'custom_FA': Dataset_Custom_FA,
     'custom_PCA': Dataset_Custom_PCA,
@@ -45,8 +33,6 @@ data_dict = {
     'custom_RobustICA': Dataset_Custom_RobustICA,
     'custom_CCA': Dataset_Custom_CCA,
     'PEMS': Dataset_PEMS,
-    'PEMS_CCA_Cycle': Dataset_PEMS_CCA_Cycle,
-    'PEMS_Cycle': Dataset_PEMS_Cycle,
     'PEMS_PCA': Dataset_PEMS_PCA,
     'PEMS_CCA': Dataset_PEMS_CCA,
     'Solar': Dataset_Solar,
