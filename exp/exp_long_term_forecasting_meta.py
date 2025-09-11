@@ -405,7 +405,7 @@ class Exp_Long_Term_Forecast_META(Exp_Basic):
         f.write('\n\n')
         f.close()
 
-        np.save(os.path.join(res_path, 'metrics.npy'), np.array([mae, mse, rmse, mape, mspe, mre]))
+        np.save(os.path.join(res_path, 'metrics.npy'), np.array([mae, mse, cov_loss, rmse, mape, mspe, mre]))
 
         if self.output_pred:
             np.save(os.path.join(res_path, 'input.npy'), inputs.cpu().numpy())
