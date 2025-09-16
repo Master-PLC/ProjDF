@@ -2,18 +2,19 @@ import os
 import time
 import warnings
 from itertools import cycle
-from contextlib import contextmanager
 
 import numpy as np
 import torch
 import torch.nn as nn
 import yaml
 from exp.exp_basic import Exp_Basic
+from models import MODEL_REQUIRES_CYCLE
+from torch.func import functional_call
 from torch.utils.data import DataLoader
 from utils.metrics import metric
 from utils.metrics_torch import create_metric_collector, metric_torch
-from utils.tools import EarlyStopping, Scheduler, clip_grads, disable_grad, enable_grad, log_heatmap, split_dataset, \
-    split_dataset_with_overlap, visual
+from utils.tools import EarlyStopping, Scheduler, clip_grads, disable_grad, enable_grad, log_heatmap, plot_heatmap, \
+    split_dataset, split_dataset_with_overlap, visual
 
 warnings.filterwarnings('ignore')
 
@@ -107,47 +108,17 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
         self.inner_lr = args.inner_lr
         self.meta_lr = args.meta_lr
         self.first_order = args.first_order
+        self.model_per_task = args.model_per_task
+        self.num_tasks = args.num_tasks
 
         self.A = CovarianceMatrix(self.args).to(self.device)
-        # 保存初始模型状态用于meta test phase重新初始化
-        self.initial_model_state = None
-
-    def save_initial_model_state(self):
-        """保存模型的初始状态"""
-        self.initial_model_state = {k: v.clone().detach() for k, v in self.model.state_dict().items()}
-
-    def reset_model_to_initial_state(self):
-        """将模型重置为初始状态"""
-        if self.initial_model_state is not None:
-            self.model.load_state_dict(self.initial_model_state)
-            print("Model reset to initial state for meta test phase")
+        self.task_models = [self.model]
+        if self.model_per_task:
+            for _ in range(1, self.num_tasks):
+                task_model = self._build_model().to(self.device)
+                self.task_models.append(task_model)
         else:
-            print("Warning: No initial model state saved, using current state")
-
-    @contextmanager
-    def temp_model_params(self, param_dict):
-        """
-        临时替换模型参数的上下文管理器
-        使用方法：
-        with self.temp_model_params(new_params):
-            output = self.model(input)
-        """
-        # 保存当前参数
-        original_params = {}
-        for name, param in self.model.named_parameters():
-            original_params[name] = param.data.clone()
-        
-        # 设置新参数
-        for name, param in self.model.named_parameters():
-            if name in param_dict:
-                param.data = param_dict[name]
-        
-        try:
-            yield
-        finally:
-            # 恢复原始参数
-            for name, param in self.model.named_parameters():
-                param.data = original_params[name]
+            self.task_models = [self.model] * self.num_tasks
 
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
@@ -177,20 +148,20 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
         self.A.train()
         return total_loss, total_cov_loss
 
-    def inner_loop(self, task_id, support_loader, query_loader, criterion=None):
+    def inner_loop(self, task_id, support_loader, query_loader):
         # 获取当前模型参数（每个meta epoch都从当前状态开始，而不是初始状态）
-        model_params_init = get_param_dict(self.model)
+        task_model = self.task_models[task_id]
+        model_params_init = get_param_dict(task_model)
 
         # 内层循环：使用学习到的损失函数训练模型参数
         fast_model_params = {k: v.clone() for k, v in model_params_init.items()}
         for k in range(self.n_inner):
             bx, by, bx_mark, by_mark, by_cycle = next(support_loader)
-            outputs, batch_y = self.forward_step_with_params(
-                bx, by, bx_mark, by_mark, by_cycle, fast_model_params
+            outputs, batch_y, _ = self.forward_step_with_params(
+                bx, by, bx_mark, by_mark, by_cycle, fast_model_params, task_model
             )
             loss = self.A.get_loss(outputs, batch_y)
 
-            # 计算模型参数的梯度
             model_grads = torch.autograd.grad(
                 loss, fast_model_params.values(), 
                 create_graph=not self.first_order, 
@@ -202,25 +173,44 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
 
         # 外层循环：在query set上使用标准损失评估性能
         bx, by, bx_mark, by_mark, by_cycle = next(query_loader)
-        outputs, batch_y = self.forward_step_with_params(
-            bx, by, bx_mark, by_mark, by_cycle, fast_model_params
+        outputs, batch_y, _ = self.forward_step_with_params(
+            bx, by, bx_mark, by_mark, by_cycle, fast_model_params, task_model
         )
-        if criterion == "self":
-            meta_loss = self.A.get_loss(outputs, batch_y)
-        else:
-            meta_loss = criterion(outputs, batch_y)
+        meta_loss = self.A.get_loss(outputs, batch_y)
         return meta_loss
 
-    def forward_step_with_params(self, batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle, params):
-        # 使用临时参数进行前向传播
-        with self.temp_model_params(params):
-            outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
-        return outputs, batch_y
+    def forward_step_with_params(self, batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle, params, model):
+        batch_x = batch_x.float().to(self.device)
+        batch_y = batch_y.float().to(self.device)
+
+        if ('PEMS' in self.args.data or 'SRU' in self.args.data) and self.args.model not in ['TiDE']:
+            batch_x_mark = None
+            batch_y_mark = None
+        else:
+            batch_x_mark = batch_x_mark.float().to(self.device)
+            batch_y_mark = batch_y_mark.float().to(self.device)
+
+        # decoder input
+        dec_inp = torch.zeros_like(batch_y[:, -self.pred_len:, :]).float()
+        dec_inp = torch.cat([batch_y[:, :self.label_len, :], dec_inp], dim=1).float().to(self.device)
+
+        # encoder - decoder
+        model_args = [batch_x, batch_x_mark, dec_inp, batch_y_mark]
+        if self.args.model in MODEL_REQUIRES_CYCLE:
+            model_args.append(batch_cycle)
+        model_args = tuple(model_args)
+        outputs, attn = functional_call(model, params, model_args) if self.args.output_attention \
+            else functional_call(model, params, model_args), None
+
+        f_dim = -1 if self.args.features == 'MS' else 0
+        outputs = outputs[:, -self.pred_len:, f_dim:]
+        batch_y = batch_y[:, -self.pred_len:, f_dim:]
+        return outputs, batch_y, attn
 
     def initialize_meta_tasks(self, train_data):
         self.meta_learning = False
 
-        task_data_list = split_dataset_with_overlap(train_data, self.args.num_tasks, self.args.overlap_ratio)
+        task_data_list = split_dataset_with_overlap(train_data, self.num_tasks, self.args.overlap_ratio)
         task_data_list = [split_dataset(task_data, r=0.7) for task_data in task_data_list]
 
         support_data_list = [td[0] for td in task_data_list]
@@ -232,32 +222,34 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
         query_loader_list = [cycle(query_loader) for query_loader in query_loader_list]
         return support_loader_list, query_loader_list
 
-    def meta_train(self, support_loader_list, query_loader_list, criterion, path):
+    def meta_train(self, support_loader_list, query_loader_list, path, res_path):
         # 在meta train阶段，损失函数参数可训练，模型参数也需要梯度（用于inner loop）
         enable_grad(self.A)
         enable_grad(self.model)
 
-        A_optim = self._select_optimizer(self.A, self.meta_lr, optim_type=getattr(self.args, 'meta_optim_type', 'Adam'))
-        A_scheduler = Scheduler(A_optim, self.args, self.args.warmup_epochs)
+        A_optim = self._select_optimizer(self.A, self.meta_lr, optim_type=self.args.meta_optim_type)
+        A_scheduler = Scheduler(A_optim, self.args, self.args.warmup_steps)
 
-        meta_epoch = 0
-        for epoch in range(self.args.warmup_epochs):
-            meta_epoch = epoch + 1
+        epoch_time = time.time()
+        meta_step = 0
+        for step in range(self.args.warmup_steps):
+            meta_step = step + 1
+            verbose = (meta_step % 100 == 0)
             task_losses = []
 
             meta_lr_cur = A_scheduler.get_lr()
-            self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_lr', meta_lr_cur, meta_epoch)
+            self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_lr', meta_lr_cur, meta_step)
 
             self.model.train()
             self.A.train()
 
-            epoch_time = time.time()
             # 遍历所有任务，累积meta loss
             for task_id, (support_loader, query_loader) in enumerate(zip(support_loader_list, query_loader_list)):
                 meta_loss = self.inner_loop(task_id, support_loader, query_loader)
                 task_losses.append(meta_loss)
-                self.writer.add_scalar(f'{self.pred_len}/meta_train/task_{task_id+1}_meta_loss', meta_loss.item(), meta_epoch)
-                print(f"\tMeta Train - Task: {task_id + 1}/{self.args.num_tasks}, Epoch: {meta_epoch} | Task Meta Loss: {meta_loss.item():.7f}")
+                self.writer.add_scalar(f'{self.pred_len}/meta_train/task_{task_id+1}_meta_loss', meta_loss.item(), meta_step)
+                if verbose:
+                    print(f"\ttask: {task_id + 1}, total task: {self.num_tasks} | meta loss: {meta_loss.item():.7f}")
 
             # 统一进行损失函数参数的更新
             A_optim.zero_grad()
@@ -266,19 +258,30 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
             A_optim.step()
 
             avg_meta_loss_val = avg_meta_loss.item()
-            self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_loss', avg_meta_loss_val, meta_epoch)
-            log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/cov_mat', meta_epoch)
+            self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_loss', avg_meta_loss_val, meta_step)
+            log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/cov_mat', meta_step)
 
-            print(f"Meta Train - Epoch: {meta_epoch} | Avg Meta Loss: {avg_meta_loss_val:.7f}")
-            print(f"Meta Train - Epoch: {meta_epoch} cost time: {time.time() - epoch_time:.2f}s")
+            if verbose:
+                print(f"Step: {meta_step} cost time: {time.time() - epoch_time:.2f}s")
+                print(f"Step: {meta_step} | Avg Meta Loss: {avg_meta_loss_val:.7f}")
+                epoch_time = time.time()
 
-            A_scheduler.step(avg_meta_loss_val, meta_epoch)
+            if self.args.lradj in ['TST']:
+                A_scheduler.step(verbose=verbose)
+            else:
+                if verbose:
+                    A_scheduler.step(avg_meta_loss_val, meta_step // 100)
 
         best_A_path = os.path.join(path, 'A.pth')
         torch.save(self.A, best_A_path)
+        projection = get_projection(self.A)
+        plot_heatmap(projection, save_path=os.path.join(res_path, 'cov_matrix.pdf'))
+        print(f'Statistics of learned covariance matrix: \033[92m(mean: {np.mean(projection):.4f}, std: {np.std(projection):.4f}, min: {np.min(projection):.4f}, max: {np.max(projection):.4f})\033[0m')
 
     def meta_test(self, train_loader, vali_data, vali_loader, criterion, path):
-        self.reset_model_to_initial_state()
+        if self.model_per_task and self.num_tasks > 1:
+            del self.task_models[1:]
+
         disable_grad(self.A)
         enable_grad(self.model)
 
@@ -361,12 +364,11 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
         self.writer = self._create_writer(res_path)
 
         criterion = self._select_criterion()
-        self.save_initial_model_state()
 
         # ============ Meta Train 阶段：只训练损失函数 ============
-        print("\n>>>>>>>Meta Train Phase\n")
-        self.meta_train(support_loader_list, query_loader_list, criterion, path)
-        print("\n>>>>>>>Meta Train Phase completed\n")
+        print("\n>>>>>>>Meta Training Phase\n")
+        self.meta_train(support_loader_list, query_loader_list, path, res_path)
+        print("\n>>>>>>>Meta Training Phase completed\n")
 
         # ============ ML3 Meta Test 阶段：重新初始化模型，使用学习到的损失函数训练 ============
         print("\n>>>>>>>Meta Test Phase\n")

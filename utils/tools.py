@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Subset
 
+
 plt.switch_backend('agg')
 
 
@@ -231,12 +232,21 @@ def visual(true, preds=None, name='./pic/test.pdf'):
     plt.savefig(name, bbox_inches='tight')
 
 
-def log_heatmap(writer, matrix, tag, step):
-    f = plt.figure(dpi=100, figsize=(4, 3))  # 如果只画一条线，就用红色，高改为3->2.5
+def plot_heatmap(matrix, save_path=None):
+    f = plt.figure(dpi=300, figsize=(4, 3))  # 如果只画一条线，就用红色，高改为3->2.5
     f.subplots_adjust(top=0.9, left=0.1, right=0.9, bottom=0.2)
     ax = f.add_subplot(1, 1, 1)
     cax = ax.matshow(matrix, cmap='viridis')
     f.colorbar(cax)
+    if save_path:
+        plt.savefig(save_path, bbox_inches='tight')
+        plt.close(f)
+    else:
+        return f
+
+
+def log_heatmap(writer, matrix, tag, step):
+    f = plot_heatmap(matrix)
     writer.add_figure(tag, f, step)
     plt.close(f)
 

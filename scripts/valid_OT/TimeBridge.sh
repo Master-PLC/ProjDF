@@ -25,9 +25,9 @@ job_number=0
 DATA_ROOT=./dataset
 EXP_NAME=finetune
 seed=2023
-des='TQNet'
+des='TimeBridge'
 
-model_name=TQNet
+model_name=TimeBridge
 auxi_mode=fft_ot
 # datasets=(ECL Traffic Weather PEMS03 PEMS08)
 datasets=(ETTh1)
@@ -39,14 +39,22 @@ dst=ETTh1
 normalize=1
 auxi_loss=None
 ot_type=upper_bound
-train_epochs=30
-patience=5
+train_epochs=100
+patience=15
 test_batch_size=1
 mask_factor=0.0
-use_revin=1
-model_type=linear
-dropout=0.5
-cycle=24
+alp=0.35
+ca_layers=0
+pd_layers=1
+ia_layers=3
+d_model=128
+d_ff=128
+n_heads=8
+period=24
+num_p=0
+dropout=0.0
+attn_dropout=0.15
+stable_len=6
 rerun=0
 
 pl_list=(96 192 336 720)
@@ -77,10 +85,12 @@ for pl in ${pl_list[@]}; do
         continue
     fi
 
-    rl=1.0
+    rl=$(echo "1 - $alpha" | bc)
+    decimal_places=$(echo "$alpha" | awk -F. '{print length($2)}')
+    rl=$(printf "%.${decimal_places}f" $rl)
     ax=$alpha
 
-    JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}_${cycle}_${dropout}_${model_type}_${use_revin}
+    JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}
     OUTPUT_DIR="./results_OT/${EXP_NAME}/${JOB_NAME}"
 
     CHECKPOINTS=$OUTPUT_DIR/checkpoints/
@@ -152,9 +162,17 @@ for pl in ${pl_list[@]}; do
             --test_results $TEST_RESULTS \
             --log_path $LOG_PATH \
             --rerun $rerun \
-            --model_type $model_type \
-            --cycle $cycle \
-            --use_revin $use_revin \
+            --alpha $alp \
+            --d_model $d_model \
+            --d_ff $d_ff \
+            --ca_layers $ca_layers \
+            --pd_layers $pd_layers \
+            --ia_layers $ia_layers \
+            --num_p $num_p \
+            --n_heads $n_heads \
+            --period $period \
+            --attn_dropout $attn_dropout \
+            --stable_len $stable_len \
             --dropout $dropout \
             --var_weight $var_weight
 
@@ -181,14 +199,22 @@ dst=ETTh2
 normalize=1
 auxi_loss=None
 ot_type=upper_bound
-train_epochs=30
-patience=5
+train_epochs=100
+patience=15
 test_batch_size=1
 mask_factor=0.0
-use_revin=1
-model_type=linear
-dropout=0.5
-cycle=24
+alp=0.35
+ca_layers=0
+pd_layers=1
+ia_layers=3
+d_model=128
+d_ff=128
+n_heads=4
+period=24
+num_p=0
+dropout=0.0
+attn_dropout=0.15
+stable_len=6
 rerun=0
 
 pl_list=(96 192 336 720)
@@ -218,10 +244,12 @@ for pl in ${pl_list[@]}; do
         continue
     fi
 
-    rl=1.0
+    rl=$(echo "1 - $alpha" | bc)
+    decimal_places=$(echo "$alpha" | awk -F. '{print length($2)}')
+    rl=$(printf "%.${decimal_places}f" $rl)
     ax=$alpha
 
-    JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}_${cycle}_${dropout}_${model_type}_${use_revin}
+    JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}
     OUTPUT_DIR="./results_OT/${EXP_NAME}/${JOB_NAME}"
 
     CHECKPOINTS=$OUTPUT_DIR/checkpoints/
@@ -293,9 +321,17 @@ for pl in ${pl_list[@]}; do
             --test_results $TEST_RESULTS \
             --log_path $LOG_PATH \
             --rerun $rerun \
-            --model_type $model_type \
-            --cycle $cycle \
-            --use_revin $use_revin \
+            --alpha $alp \
+            --d_model $d_model \
+            --d_ff $d_ff \
+            --ca_layers $ca_layers \
+            --pd_layers $pd_layers \
+            --ia_layers $ia_layers \
+            --num_p $num_p \
+            --n_heads $n_heads \
+            --period $period \
+            --attn_dropout $attn_dropout \
+            --stable_len $stable_len \
             --dropout $dropout \
             --var_weight $var_weight
 
@@ -324,21 +360,29 @@ dst=ETTm1
 normalize=1
 auxi_loss=None
 ot_type=upper_bound
-train_epochs=30
-patience=5
+train_epochs=100
+patience=15
 test_batch_size=1
 mask_factor=0.0
-use_revin=1
-model_type=linear
-dropout=0.5
-cycle=96
+alp=0.35
+ca_layers=0
+pd_layers=1
+ia_layers=3
+d_model=64
+d_ff=128
+n_heads=4
+period=48
+num_p=6
+dropout=0.0
+attn_dropout=0.15
+stable_len=6
 rerun=0
 
 pl_list=(96 192 336 720)
 alpha_list=(0.01 0.005)
 lr_list=(0.001 0.0005)
 distance_list=(wasserstein_empirical_per_dim)
-lradj_list=(type1)
+lradj_list=(TST)
 joint_forecast_list=(1)
 bs_list=(32)
 eps_list=(1e-9)
@@ -362,10 +406,12 @@ for pl in ${pl_list[@]}; do
         continue
     fi
 
-    rl=1.0
+    rl=$(echo "1 - $alpha" | bc)
+    decimal_places=$(echo "$alpha" | awk -F. '{print length($2)}')
+    rl=$(printf "%.${decimal_places}f" $rl)
     ax=$alpha
 
-    JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}_${cycle}_${dropout}_${model_type}_${use_revin}
+    JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}
     OUTPUT_DIR="./results_OT/${EXP_NAME}/${JOB_NAME}"
 
     CHECKPOINTS=$OUTPUT_DIR/checkpoints/
@@ -437,9 +483,17 @@ for pl in ${pl_list[@]}; do
             --test_results $TEST_RESULTS \
             --log_path $LOG_PATH \
             --rerun $rerun \
-            --model_type $model_type \
-            --cycle $cycle \
-            --use_revin $use_revin \
+            --alpha $alp \
+            --d_model $d_model \
+            --d_ff $d_ff \
+            --ca_layers $ca_layers \
+            --pd_layers $pd_layers \
+            --ia_layers $ia_layers \
+            --num_p $num_p \
+            --n_heads $n_heads \
+            --period $period \
+            --attn_dropout $attn_dropout \
+            --stable_len $stable_len \
             --dropout $dropout \
             --var_weight $var_weight
 
@@ -469,14 +523,22 @@ dst=ETTm2
 normalize=1
 auxi_loss=None
 ot_type=upper_bound
-train_epochs=30
-patience=5
+train_epochs=100
+patience=15
 test_batch_size=1
 mask_factor=0.0
-use_revin=1
-model_type=linear
-dropout=0.5
-cycle=96
+alp=0.35
+ca_layers=0
+pd_layers=1
+ia_layers=3
+d_model=64
+d_ff=128
+n_heads=4
+period=48
+num_p=0
+dropout=0.0
+attn_dropout=0.15
+stable_len=6
 rerun=0
 
 pl_list=(96 192 336 720)
@@ -507,10 +569,12 @@ for pl in ${pl_list[@]}; do
         continue
     fi
 
-    rl=1.0
+    rl=$(echo "1 - $alpha" | bc)
+    decimal_places=$(echo "$alpha" | awk -F. '{print length($2)}')
+    rl=$(printf "%.${decimal_places}f" $rl)
     ax=$alpha
 
-    JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}_${cycle}_${dropout}_${model_type}_${use_revin}
+    JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}
     OUTPUT_DIR="./results_OT/${EXP_NAME}/${JOB_NAME}"
 
     CHECKPOINTS=$OUTPUT_DIR/checkpoints/
@@ -582,9 +646,17 @@ for pl in ${pl_list[@]}; do
             --test_results $TEST_RESULTS \
             --log_path $LOG_PATH \
             --rerun $rerun \
-            --model_type $model_type \
-            --cycle $cycle \
-            --use_revin $use_revin \
+            --alpha $alp \
+            --d_model $d_model \
+            --d_ff $d_ff \
+            --ca_layers $ca_layers \
+            --pd_layers $pd_layers \
+            --ia_layers $ia_layers \
+            --num_p $num_p \
+            --n_heads $n_heads \
+            --period $period \
+            --attn_dropout $attn_dropout \
+            --stable_len $stable_len \
             --dropout $dropout \
             --var_weight $var_weight
 
@@ -612,14 +684,22 @@ dst=ECL
 normalize=1
 auxi_loss=None
 ot_type=upper_bound
-train_epochs=30
-patience=5
+train_epochs=10
+patience=3
 test_batch_size=1
 mask_factor=0.0
-use_revin=1
-model_type=linear
+alp=0.2
+ca_layers=2
+pd_layers=1
+ia_layers=1
+d_model=512
+d_ff=512
+n_heads=32
+period=24
+num_p=4
 dropout=0.0
-cycle=168
+attn_dropout=0.1
+stable_len=4
 rerun=0
 
 pl_list=(96 192 336 720)
@@ -649,10 +729,12 @@ for pl in ${pl_list[@]}; do
         continue
     fi
 
-    rl=1.0
+    rl=$(echo "1 - $alpha" | bc)
+    decimal_places=$(echo "$alpha" | awk -F. '{print length($2)}')
+    rl=$(printf "%.${decimal_places}f" $rl)
     ax=$alpha
 
-    JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}_${cycle}_${dropout}_${model_type}_${use_revin}
+    JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}
     OUTPUT_DIR="./results_OT/${EXP_NAME}/${JOB_NAME}"
 
     CHECKPOINTS=$OUTPUT_DIR/checkpoints/
@@ -724,9 +806,17 @@ for pl in ${pl_list[@]}; do
             --test_results $TEST_RESULTS \
             --log_path $LOG_PATH \
             --rerun $rerun \
-            --model_type $model_type \
-            --cycle $cycle \
-            --use_revin $use_revin \
+            --alpha $alp \
+            --d_model $d_model \
+            --d_ff $d_ff \
+            --ca_layers $ca_layers \
+            --pd_layers $pd_layers \
+            --ia_layers $ia_layers \
+            --num_p $num_p \
+            --n_heads $n_heads \
+            --period $period \
+            --attn_dropout $attn_dropout \
+            --stable_len $stable_len \
             --dropout $dropout \
             --var_weight $var_weight
 
@@ -755,14 +845,22 @@ dst=Traffic
 normalize=1
 auxi_loss=None
 ot_type=upper_bound
-train_epochs=30
+train_epochs=100
 patience=5
 test_batch_size=1
 mask_factor=0.0
-use_revin=1
-model_type=linear
+alp=0.35
+ca_layers=3
+pd_layers=1
+ia_layers=1
+d_model=512
+d_ff=512
+n_heads=64
+period=24
+num_p=8
 dropout=0.0
-cycle=168
+attn_dropout=0.15
+stable_len=2
 rerun=0
 
 pl_list=(96 192 336 720)
@@ -792,10 +890,12 @@ for pl in ${pl_list[@]}; do
         continue
     fi
 
-    rl=1.0
+    rl=$(echo "1 - $alpha" | bc)
+    decimal_places=$(echo "$alpha" | awk -F. '{print length($2)}')
+    rl=$(printf "%.${decimal_places}f" $rl)
     ax=$alpha
 
-    JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}_${cycle}_${dropout}_${model_type}_${use_revin}
+    JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}
     OUTPUT_DIR="./results_OT/${EXP_NAME}/${JOB_NAME}"
 
     CHECKPOINTS=$OUTPUT_DIR/checkpoints/
@@ -867,9 +967,17 @@ for pl in ${pl_list[@]}; do
             --test_results $TEST_RESULTS \
             --log_path $LOG_PATH \
             --rerun $rerun \
-            --model_type $model_type \
-            --cycle $cycle \
-            --use_revin $use_revin \
+            --alpha $alp \
+            --d_model $d_model \
+            --d_ff $d_ff \
+            --ca_layers $ca_layers \
+            --pd_layers $pd_layers \
+            --ia_layers $ia_layers \
+            --num_p $num_p \
+            --n_heads $n_heads \
+            --period $period \
+            --attn_dropout $attn_dropout \
+            --stable_len $stable_len \
             --dropout $dropout \
             --var_weight $var_weight
 
@@ -897,14 +1005,22 @@ dst=Weather
 normalize=1
 auxi_loss=None
 ot_type=upper_bound
-train_epochs=30
-patience=5
+train_epochs=100
+patience=15
 test_batch_size=1
 mask_factor=0.0
-use_revin=1
-model_type=linear
-dropout=0.5
-cycle=144
+alp=0.1
+ca_layers=1
+pd_layers=1
+ia_layers=1
+d_model=128
+d_ff=128
+n_heads=8
+period=48
+num_p=12
+dropout=0.0
+attn_dropout=0.15
+stable_len=6
 rerun=0
 
 pl_list=(96 192 336 720)
@@ -934,10 +1050,12 @@ for pl in ${pl_list[@]}; do
         continue
     fi
 
-    rl=1.0
+    rl=$(echo "1 - $alpha" | bc)
+    decimal_places=$(echo "$alpha" | awk -F. '{print length($2)}')
+    rl=$(printf "%.${decimal_places}f" $rl)
     ax=$alpha
 
-    JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}_${cycle}_${dropout}_${model_type}_${use_revin}
+    JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}
     OUTPUT_DIR="./results_OT/${EXP_NAME}/${JOB_NAME}"
 
     CHECKPOINTS=$OUTPUT_DIR/checkpoints/
@@ -1009,9 +1127,17 @@ for pl in ${pl_list[@]}; do
             --test_results $TEST_RESULTS \
             --log_path $LOG_PATH \
             --rerun $rerun \
-            --model_type $model_type \
-            --cycle $cycle \
-            --use_revin $use_revin \
+            --alpha $alp \
+            --d_model $d_model \
+            --d_ff $d_ff \
+            --ca_layers $ca_layers \
+            --pd_layers $pd_layers \
+            --ia_layers $ia_layers \
+            --num_p $num_p \
+            --n_heads $n_heads \
+            --period $period \
+            --attn_dropout $attn_dropout \
+            --stable_len $stable_len \
             --dropout $dropout \
             --var_weight $var_weight
 
@@ -1039,14 +1165,22 @@ dst=PEMS03
 normalize=1
 auxi_loss=None
 ot_type=upper_bound
-train_epochs=30
-patience=5
+train_epochs=100
+patience=15
 test_batch_size=1
 mask_factor=0.0
-use_revin=0
-model_type=linear
+alp=0.2
+ca_layers=2
+pd_layers=1
+ia_layers=1
+d_model=512
+d_ff=512
+n_heads=32
+period=24
+num_p=4
 dropout=0.0
-cycle=288
+attn_dropout=0.1
+stable_len=4
 rerun=0
 
 pl_list=(12 24 36 48)
@@ -1076,10 +1210,12 @@ for pl in ${pl_list[@]}; do
         continue
     fi
 
-    rl=1.0
+    rl=$(echo "1 - $alpha" | bc)
+    decimal_places=$(echo "$alpha" | awk -F. '{print length($2)}')
+    rl=$(printf "%.${decimal_places}f" $rl)
     ax=$alpha
 
-    JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}_${cycle}_${dropout}_${model_type}_${use_revin}
+    JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}
     OUTPUT_DIR="./results_OT/${EXP_NAME}/${JOB_NAME}"
 
     CHECKPOINTS=$OUTPUT_DIR/checkpoints/
@@ -1151,9 +1287,17 @@ for pl in ${pl_list[@]}; do
             --test_results $TEST_RESULTS \
             --log_path $LOG_PATH \
             --rerun $rerun \
-            --model_type $model_type \
-            --cycle $cycle \
-            --use_revin $use_revin \
+            --alpha $alp \
+            --d_model $d_model \
+            --d_ff $d_ff \
+            --ca_layers $ca_layers \
+            --pd_layers $pd_layers \
+            --ia_layers $ia_layers \
+            --num_p $num_p \
+            --n_heads $n_heads \
+            --period $period \
+            --attn_dropout $attn_dropout \
+            --stable_len $stable_len \
             --dropout $dropout \
             --var_weight $var_weight
 
@@ -1183,14 +1327,22 @@ dst=PEMS08
 normalize=1
 auxi_loss=None
 ot_type=upper_bound
-train_epochs=30
-patience=5
+train_epochs=100
+patience=15
 test_batch_size=1
 mask_factor=0.0
-use_revin=1
-model_type=linear
+alp=0.05
+ca_layers=1
+pd_layers=1
+ia_layers=1
+d_model=128
+d_ff=128
+n_heads=8
+period=48
+num_p=12
 dropout=0.0
-cycle=288
+attn_dropout=0.15
+stable_len=6
 rerun=0
 
 pl_list=(12 24 36 48)
@@ -1221,10 +1373,12 @@ for pl in ${pl_list[@]}; do
         continue
     fi
 
-    rl=1.0
+    rl=$(echo "1 - $alpha" | bc)
+    decimal_places=$(echo "$alpha" | awk -F. '{print length($2)}')
+    rl=$(printf "%.${decimal_places}f" $rl)
     ax=$alpha
 
-    JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}_${cycle}_${dropout}_${model_type}_${use_revin}
+    JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}
     OUTPUT_DIR="./results_OT/${EXP_NAME}/${JOB_NAME}"
 
     CHECKPOINTS=$OUTPUT_DIR/checkpoints/
@@ -1296,9 +1450,17 @@ for pl in ${pl_list[@]}; do
             --test_results $TEST_RESULTS \
             --log_path $LOG_PATH \
             --rerun $rerun \
-            --model_type $model_type \
-            --cycle $cycle \
-            --use_revin $use_revin \
+            --alpha $alp \
+            --d_model $d_model \
+            --d_ff $d_ff \
+            --ca_layers $ca_layers \
+            --pd_layers $pd_layers \
+            --ia_layers $ia_layers \
+            --num_p $num_p \
+            --n_heads $n_heads \
+            --period $period \
+            --attn_dropout $attn_dropout \
+            --stable_len $stable_len \
             --dropout $dropout \
             --var_weight $var_weight
 

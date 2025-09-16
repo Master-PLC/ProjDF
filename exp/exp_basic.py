@@ -84,8 +84,17 @@ class Exp_Basic(object):
         model_optim = optim_class(model.parameters(), lr=lr)
         return model_optim
 
-    def _select_criterion(self):
-        criterion = nn.MSELoss()
+    def _select_criterion(self, loss_type=None):
+        loss_type = loss_type or self.args.loss
+        loss_type = loss_type.lower()
+        if loss_type == 'mse':
+            criterion = nn.MSELoss()
+        elif loss_type == 'mae':
+            criterion = nn.L1Loss()
+        elif loss_type == 'huber':
+            criterion = nn.SmoothL1Loss()
+        else:
+            criterion = loss_type
         return criterion
 
     def forward_step(self, batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle):

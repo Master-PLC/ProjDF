@@ -106,7 +106,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', type=int, default=10, help='data loader num workers')
     parser.add_argument('--itr', type=int, default=1, help='experiments times')
     parser.add_argument('--train_epochs', type=int, default=10, help='train epochs')
-    parser.add_argument('--warmup_epochs', type=int, default=20)
+    parser.add_argument('--warmup_steps', type=int, default=20)
     parser.add_argument('--batch_size', type=int, default=32, help='batch size of train input data')
     parser.add_argument('--auxi_batch_size', type=int, default=1024, help='batch size of test input data')
     parser.add_argument('--test_batch_size', type=int, default=1, help='batch size of test input data')
@@ -239,6 +239,7 @@ if __name__ == '__main__':
     parser.add_argument('--meta_optim_type', type=str, default='sgd', help='optimizer type')
     parser.add_argument('--max_norm', type=float, default=1.0, help='max norm for gradient clipping')
     parser.add_argument('--first_order', type=int, default=1, help='first order approximation; True 1 False 0')
+    parser.add_argument('--model_per_task', type=int, default=0, help='separate model for each task; True 1 False 0')
 
     # CycleNet
     parser.add_argument('--cycle', type=int, default=24, help='cycle length')
@@ -259,7 +260,9 @@ if __name__ == '__main__':
     parser.add_argument('--pd_layers', type=int, default=1, help='num of patch downsampled layers')
     parser.add_argument('--ca_layers', type=int, default=0, help='num of cointegrated attention layers')
     parser.add_argument('--stable_len', type=int, default=6, help='length of moving average in patch norm')
-    parser.add_argument('--num_p', type=int, default=None, help='num of down sampled patches')
+    parser.add_argument('--num_p', type=int, default=0, help='num of down sampled patches')
+    parser.add_argument('--attn_dropout', type=float, default=0.15, help='dropout rate of attention map')
+    parser.add_argument('--period', type=int, default=24, help='length of patches')
 
     args = parser.parse_args()
 

@@ -15,7 +15,7 @@ class Model(nn.Module):
         self.seq_len = configs.seq_len
         self.pred_len = configs.pred_len
         self.num_p = self.seq_len // self.period
-        if configs.num_p is None:
+        if not configs.num_p:
             configs.num_p = self.num_p
 
         self.embedding = PatchEmbed(configs, num_p=self.num_p)
