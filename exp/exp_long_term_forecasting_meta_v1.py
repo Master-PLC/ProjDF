@@ -2,49 +2,38 @@ import os
 import time
 import warnings
 from itertools import cycle
+from contextlib import contextmanager
 
 import numpy as np
 import torch
 import torch.nn as nn
 import yaml
-from torch.utils.data import DataLoader
-
 from exp.exp_basic import Exp_Basic
-from utils.metrics_torch import metric_torch
-from utils.metrics import metric  # 如果没用可移除
-from utils.tools import (
-    EarlyStopping,
-    Scheduler,
-    clip_grads,
-    disable_grad,
-    enable_grad,
-    log_heatmap,
-    split_dataset,
-    split_dataset_with_overlap,
-    visual
-)
+from torch.utils.data import DataLoader
+from utils.metrics import metric
+from utils.metrics_torch import create_metric_collector, metric_torch
+from utils.tools import EarlyStopping, Scheduler, clip_grads, disable_grad, enable_grad, log_heatmap, split_dataset, \
+    split_dataset_with_overlap, visual
 
 warnings.filterwarnings('ignore')
 
 
 class CovarianceMatrix(nn.Module):
-    """
-    可学习的协方差（通过下三角 L 构造 Σ = L L^T），
-    用以定义一个可学习的时间维度相关性损失。
-    """
     def __init__(self, args):
         super().__init__()
         self.args = args
         self.pred_len = args.pred_len
         self.L_param = nn.Parameter(torch.eye(args.pred_len))
         self.eps = 1e-6
-        self.auxi_loss = getattr(args, 'auxi_loss', 'MSE')
+        self.auxi_loss = args.auxi_loss
 
     def _get_L(self, params=None):
         if params is None:
             L_param = self.L_param
         else:
             L_param = params['L_param']
+
+        # 取下三角并在对角线加 eps，确保正定
         L = torch.tril(L_param)
         diag = torch.diag_embed(torch.diagonal(L, dim1=-2, dim2=-1) + self.eps)
         L = L - torch.diag_embed(torch.diagonal(L, dim1=-2, dim2=-1)) + diag
@@ -52,7 +41,7 @@ class CovarianceMatrix(nn.Module):
 
     def forward(self, params=None):
         L = self._get_L(params)
-        return L @ L.transpose(-1, -2)
+        return L @ L.transpose(-1, -2)               # Σ = L Lᵀ
 
     def get_inverse(self, params=None):
         L = self._get_L(params)
@@ -60,21 +49,22 @@ class CovarianceMatrix(nn.Module):
         return torch.linalg.inv(A)
 
     def get_loss(self, pred, target, params=None):
-        """
-        pred / target: [B, pred_len, D]
-        使用 L 来对 (pred - target) 做“白化”后再计算加权误差。
-        """
-        L = self._get_L(params)
+        """ML3 Learned Loss Function"""
+        L = self._get_L(params)  # [P, P] 下三角矩阵
+
         E = pred - target  # [B, P, D]
-        # 重排为 [B*D, P]
-        E_flat = E.permute(0, 2, 1).reshape(-1, self.pred_len)
-        # 解 L x = E^T
+        E_flat = E.permute(0, 2, 1).reshape(-1, self.pred_len)  # [B*D, P]
+
+        # 解线性方程组 Lx = E_flat，得到 x = L^{-1}E_flat
+        # 使用三角求解器（L是下三角矩阵）
         x = torch.linalg.solve_triangular(
-            L,
-            E_flat.T,
-            upper=False,
+            L, 
+            E_flat.T,  # 转置为 [P, B*D]
+            upper=False, 
             unitriangular=False
-        ).T
+        ).T  # 转置回 [B*D, P]
+
+        # 计算二次型: x^T x
         if self.auxi_loss == 'MSE':
             loss = torch.mean(x ** 2)
         elif self.auxi_loss == 'MAE':
@@ -82,387 +72,371 @@ class CovarianceMatrix(nn.Module):
         else:
             raise AttributeError(f"No defined loss type for {self.auxi_loss}.")
 
-        reg_lambda = getattr(self.args, 'reg_lambda', 0.0)
-        if reg_lambda > 0:
-            Sigma = self.forward(params)
+        if self.args.reg_lambda > 0:
+            Sigma = self.forward(params)  # [P, P]
             off_diag = Sigma - torch.diag_embed(torch.diagonal(Sigma))
             reg_loss = torch.norm(off_diag, p='fro') ** 2
-            loss += reg_lambda * reg_loss
+            loss += self.args.reg_lambda * reg_loss
+
         return loss
 
 
 def get_projection(A):
     with torch.no_grad():
         Am = A()
-    return Am.detach().cpu().numpy()
+    return Am.detach().cpu().numpy()  # 返回 numpy 数组
 
 
 def get_param_dict(module):
+    # 返回 OrderedDict，适用于 functional forward
     return dict(module.named_parameters())
 
 
 def update_param_dict(param_dict, grads, lr):
+    # param_dict: dict key->tensor, grads: dict key->grad
     return {k: v - lr * grads[k] for k, v in param_dict.items()}
 
 
-class Exp_Long_Term_Forecast_META_V1(Exp_Basic):
-    """
-    两阶段版本：
-    Phase 1: Meta Learning 训练 A （协方差结构/元损失），冻结 base model
-    Phase 2: 使用已训练好的 A (固定) 作为损失，对 base model 做普通训练
-    """
+class Exp_Long_Term_Forecast_ML3(Exp_Basic):
     def __init__(self, args):
         super().__init__(args)
-        # 任务相关超参
         self.pred_len = args.pred_len
         self.label_len = args.label_len
+        self.n_inner = args.meta_inner_steps
+        self.lr = args.learning_rate
+        self.inner_lr = args.inner_lr
+        self.meta_lr = args.meta_lr
+        self.first_order = args.first_order
 
-        # Meta 超参
-        self.n_inner = getattr(args, 'meta_inner_steps', 5)
-        self.inner_lr = getattr(args, 'inner_lr', 1e-3)
-        self.meta_lr = getattr(args, 'meta_lr', 1e-3)
-        self.first_order = getattr(args, 'first_order', False)
-        self.num_tasks = getattr(args, 'num_tasks', 4)
-        self.overlap_ratio = getattr(args, 'overlap_ratio', 0.2)
-        self.auxi_batch_size = getattr(args, 'auxi_batch_size', 32)
-
-        # Phase 1 epochs / early stop
-        self.meta_epochs = getattr(args, 'meta_epochs', 30)
-        self.meta_patience = getattr(args, 'meta_patience', 5)
-
-        # Phase 2 (base training) 超参
-        self.lr = getattr(args, 'learning_rate', 1e-3)
-        self.train_epochs = getattr(args, 'train_epochs', 10)
-
-        # 其余
-        self.max_norm = getattr(args, 'max_norm', None)
-
-        # 协方差模块 A
         self.A = CovarianceMatrix(self.args).to(self.device)
+        # 保存初始模型状态用于meta test phase重新初始化
+        self.initial_model_state = None
 
-        # Writer 与计数器
-        self.meta_global_step = 0
-        self.train_global_step = 0
-        self.writer = None
+    def save_initial_model_state(self):
+        """保存模型的初始状态"""
+        self.initial_model_state = {k: v.clone().detach() for k, v in self.model.state_dict().items()}
 
-        # 标记
-        self.meta_trained = False
+    def reset_model_to_initial_state(self):
+        """将模型重置为初始状态"""
+        if self.initial_model_state is not None:
+            self.model.load_state_dict(self.initial_model_state)
+            print("Model reset to initial state for meta test phase")
+        else:
+            print("Warning: No initial model state saved, using current state")
 
-    # =============== Meta Learning Phase (Train A) ===============
+    @contextmanager
+    def temp_model_params(self, param_dict):
+        """
+        临时替换模型参数的上下文管理器
+        使用方法：
+        with self.temp_model_params(new_params):
+            output = self.model(input)
+        """
+        # 保存当前参数
+        original_params = {}
+        for name, param in self.model.named_parameters():
+            original_params[name] = param.data.clone()
+        
+        # 设置新参数
+        for name, param in self.model.named_parameters():
+            if name in param_dict:
+                param.data = param_dict[name]
+        
+        try:
+            yield
+        finally:
+            # 恢复原始参数
+            for name, param in self.model.named_parameters():
+                param.data = original_params[name]
+
+    def vali(self, vali_data, vali_loader, criterion):
+        total_loss = []
+        total_cov_loss = []
+        self.model.eval()
+        self.A.eval()
+
+        eval_time = time.time()
+        with torch.no_grad():
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(vali_loader):
+                outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
+
+                pred = outputs.detach()
+                true = batch_y.detach()
+
+                loss = criterion(pred, true)  # 标准损失
+                cov_loss = self.A.get_loss(pred, true)  # 学习到的损失
+
+                total_loss.append(loss)
+                total_cov_loss.append(cov_loss)
+
+        print('Validation cost time: {}'.format(time.time() - eval_time))
+        total_loss = torch.mean(torch.stack(total_loss)).item()
+        total_cov_loss = torch.mean(torch.stack(total_cov_loss)).item()
+
+        self.model.train()
+        self.A.train()
+        return total_loss, total_cov_loss
+
+    def inner_loop(self, task_id, support_loader, query_loader):
+        # 获取当前模型参数（每个meta epoch都从当前状态开始，而不是初始状态）
+        model_params_init = get_param_dict(self.model)
+
+        # 内层循环：使用学习到的损失函数训练模型参数
+        fast_model_params = {k: v.clone() for k, v in model_params_init.items()}
+        for k in range(self.n_inner):
+            bx, by, bx_mark, by_mark, by_cycle = next(support_loader)
+            outputs, batch_y, _ = self.forward_step_with_params(
+                bx, by, bx_mark, by_mark, by_cycle, fast_model_params
+            )
+            loss = self.A.get_loss(outputs, batch_y)
+
+            # 计算模型参数的梯度
+            model_grads = torch.autograd.grad(
+                loss, fast_model_params.values(), 
+                create_graph=not self.first_order, 
+                allow_unused=True
+            )
+            model_grads = clip_grads(model_grads, self.args.max_norm)
+            model_grads_dict = {k: g for k, g in zip(fast_model_params.keys(), model_grads) if g is not None}
+            fast_model_params = update_param_dict(fast_model_params, model_grads_dict, self.inner_lr)
+
+        # 外层循环：在query set上使用标准损失评估性能
+        bx, by, bx_mark, by_mark, by_cycle = next(query_loader)
+        outputs, batch_y, _ = self.forward_step_with_params(
+            bx, by, bx_mark, by_mark, by_cycle, fast_model_params
+        )
+        # 使用标准损失（如MSE）作为元目标
+        meta_loss = nn.MSELoss()(outputs, batch_y)
+        return meta_loss
+
+    def forward_step_with_params(self, batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle, params):
+        # 使用临时参数进行前向传播
+        with self.temp_model_params(params):
+            outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
+        return outputs, batch_y, None
 
     def initialize_meta_tasks(self, train_data):
-        """
-        将训练数据切分成多个任务，并为每个任务建立 support/query loader
-        """
-        task_data_list = split_dataset_with_overlap(
-            train_data,
-            self.num_tasks,
-            self.overlap_ratio
-        )
-        # 每个 task 再 7:3 划分 support/query
+        self.meta_learning = False
+
+        task_data_list = split_dataset_with_overlap(train_data, self.args.num_tasks, self.args.overlap_ratio)
         task_data_list = [split_dataset(task_data, r=0.7) for task_data in task_data_list]
 
         support_data_list = [td[0] for td in task_data_list]
-        support_loader_list = [
-            DataLoader(support_data, batch_size=self.auxi_batch_size, shuffle=True)
-            for support_data in support_data_list
-        ]
-        support_loader_list = [cycle(ld) for ld in support_loader_list]
+        support_loader_list = [DataLoader(support_data, batch_size=self.args.auxi_batch_size, shuffle=True) for support_data in support_data_list]
+        support_loader_list = [cycle(support_loader) for support_loader in support_loader_list]
 
         query_data_list = [td[1] for td in task_data_list]
-        query_loader_list = [
-            DataLoader(query_data, batch_size=self.auxi_batch_size, shuffle=True)
-            for query_data in query_data_list
-        ]
-        query_loader_list = [cycle(ld) for ld in query_loader_list]
-
+        query_loader_list = [DataLoader(query_data, batch_size=self.args.auxi_batch_size, shuffle=True) for query_data in query_data_list]
+        query_loader_list = [cycle(query_loader) for query_loader in query_loader_list]
         return support_loader_list, query_loader_list
 
-    def inner_loop(self, support_loader, query_loader):
-        """
-        针对一个任务的 MAML inner adaptation:
-        - fast_params: A 的虚拟参数副本
-        - 多步 support set 更新
-        - 最终在 query set 上计算 meta 梯度
-        返回: support 平均 loss, query loss (tensor)
-        """
-        fast_params = get_param_dict(self.A)
-        support_losses = []
-
-        for _ in range(self.n_inner):
-            bx, by, bx_mark, by_mark, by_cycle = next(support_loader)
-            # base model 冻结，用于生成预测
-            with torch.no_grad():
-                outputs, batch_y, _ = self.forward_step(
-                    bx, by, bx_mark, by_mark, by_cycle
-                )
-            loss_s = self.A.get_loss(outputs, batch_y, params=fast_params)
-            grads = torch.autograd.grad(
-                loss_s,
-                fast_params.values(),
-                create_graph=not self.first_order
-            )
-            if self.max_norm is not None:
-                grads = clip_grads(grads, self.max_norm)
-            grads_dict = {k: g for k, g in zip(fast_params.keys(), grads)}
-            fast_params = update_param_dict(fast_params, grads_dict, self.inner_lr)
-            support_losses.append(loss_s.detach().item())
-
-        # Query
-        bxq, byq, bxq_mark, byq_mark, byq_cycle = next(query_loader)
-        with torch.no_grad():
-            outputs_q, batch_y_q, _ = self.forward_step(
-                bxq, byq, bxq_mark, byq_mark, byq_cycle
-            )
-        loss_q = self.A.get_loss(outputs_q, batch_y_q, params=fast_params)
-        return np.mean(support_losses), loss_q
-
-    def meta_validate(self, vali_loader):
-        """
-        在 meta 阶段对 A 进行验证（冻结 base model），统计 query 损失形式。
-        """
-        self.A.eval()
-        total_cov_loss = []
-        criterion = nn.MSELoss()
-        total_mse = []
-
-        with torch.no_grad():
-            for batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle in vali_loader:
-                outputs, batch_y, _ = self.forward_step(
-                    batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle
-                )
-                cov_loss = self.A.get_loss(outputs, batch_y)
-                mse_loss = criterion(outputs, batch_y)
-                total_cov_loss.append(cov_loss)
-                total_mse.append(mse_loss)
-
-        mean_cov = torch.mean(torch.stack(total_cov_loss)).item()
-        mean_mse = torch.mean(torch.stack(total_mse)).item()
-        self.A.train()
-        return mean_cov, mean_mse
-
-    def meta_train(self, train_data, vali_loader, setting):
-        """
-        Phase 1: 只训练 A
-        """
-        print("\n================= Phase 1: Meta Learning A =================\n")
-        # 冻结 base model
-        disable_grad(self.model)
-        self.model.eval()
-
+    def meta_train(self, support_loader_list, query_loader_list, criterion, path, res_path):
+        # 在meta train阶段，损失函数参数可训练，模型参数也需要梯度（用于inner loop）
         enable_grad(self.A)
-        self.A.train()
-
-        support_loader_list, query_loader_list = self.initialize_meta_tasks(train_data)
-
-        # 优化器 & early stopping
-        A_optim = self._select_optimizer(self.A, self.meta_lr, optim_type=getattr(self.args, 'meta_optim_type', 'adam'))
-        A_scheduler = Scheduler(A_optim, self.args, steps_per_epoch=len(train_data) if hasattr(train_data, '__len__') else 100)
-        meta_early_stopping = EarlyStopping(patience=self.meta_patience, verbose=True, prefix='[Meta]')
-
-        # 准备日志目录
-        meta_ckpt_dir = os.path.join(self.args.checkpoints, setting)
-        os.makedirs(meta_ckpt_dir, exist_ok=True)
-        res_path = os.path.join(self.args.results, setting)
-        os.makedirs(res_path, exist_ok=True)
-
-        if self.writer is None:
-            self.writer = self._create_writer(res_path)
-
-        best_metric = None
-
-        for epoch in range(1, self.meta_epochs + 1):
-            epoch_support_losses, epoch_query_losses = [], []
-            t0 = time.time()
-
-            for task_id, (support_loader, query_loader) in enumerate(zip(support_loader_list, query_loader_list)):
-                # 一个 outer step: 对单任务执行 inner_loop
-                A_optim.zero_grad()
-                support_l, query_l = self.inner_loop(support_loader, query_loader)
-                query_l.backward()
-                A_optim.step()
-
-                self.meta_global_step += 1
-                epoch_support_losses.append(support_l)
-                epoch_query_losses.append(query_l.item())
-
-                if task_id % 20 == 0:
-                    print(f"[Meta][Epoch {epoch}] Task {task_id} | Support: {support_l:.5f} | Query: {query_l.item():.5f}")
-
-            # 调度器（可根据策略自行调整，这里如果 lradj == 'TST' 按 step，否则按 epoch 验证）
-            if getattr(self.args, 'lradj', None) in ['TST']:
-                A_scheduler.step(verbose=False)
-
-            mean_support = np.mean(epoch_support_losses)
-            mean_query = np.mean(epoch_query_losses)
-
-            # 验证
-            vali_cov, vali_mse = self.meta_validate(vali_loader)
-
-            self.writer.add_scalar(f'{self.pred_len}/meta/support_loss', mean_support, epoch)
-            self.writer.add_scalar(f'{self.pred_len}/meta/query_loss', mean_query, epoch)
-            self.writer.add_scalar(f'{self.pred_len}/meta/vali_cov', vali_cov, epoch)
-            self.writer.add_scalar(f'{self.pred_len}/meta/vali_mse', vali_mse, epoch)
-            log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/meta/cov_mat', epoch)
-
-            print(f"[Meta][Epoch {epoch}] Time: {time.time() - t0:.2f}s | "
-                  f"Train Support: {mean_support:.5f} | Train Query: {mean_query:.5f} | "
-                  f"Vali Cov: {vali_cov:.5f} | Vali MSE: {vali_mse:.5f}")
-
-            # 用验证 cov 或 query 之一做 early stopping，这里选择 vali_cov
-            metric_to_track = vali_cov
-            improved = meta_early_stopping(metric_to_track, self.A, meta_ckpt_dir, file_name='A_meta.pth')
-            if improved:
-                best_metric = metric_to_track
-
-            if meta_early_stopping.early_stop:
-                print("[Meta] Early stopping triggered.")
-                break
-
-            if getattr(self.args, 'lradj', None) not in ['TST']:
-                A_scheduler.step(metric_to_track, epoch)
-
-        # 加载最优 A
-        best_A_path = os.path.join(meta_ckpt_dir, 'A_meta.pth')
-        if os.path.exists(best_A_path):
-            self.A = torch.load(best_A_path)
-        else:
-            torch.save(self.A, best_A_path)
-        self.meta_trained = True
-        print(f"[Meta] Finished. Best metric (vali cov) = {best_metric}")
-
-    # =============== Phase 2: Train Base Model with Fixed A ===============
-
-    def vali(self, vali_data, vali_loader, criterion):
-        total_loss_cov = []
-        total_loss_mse = []
-        self.model.eval()
-        self.A.eval()
-
-        with torch.no_grad():
-            for batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle in vali_loader:
-                outputs, batch_y, _ = self.forward_step(
-                    batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle
-                )
-                loss_cov = self.A.get_loss(outputs, batch_y)
-                loss_mse = criterion(outputs, batch_y)
-                total_loss_cov.append(loss_cov)
-                total_loss_mse.append(loss_mse)
-
-        cov_mean = torch.mean(torch.stack(total_loss_cov)).item()
-        mse_mean = torch.mean(torch.stack(total_loss_mse)).item()
-
-        self.model.train()
-        self.A.train()  # 虽然后面不更新 A，但保持接口一致
-        return mse_mean, cov_mean
-
-    def base_train(self, train_loader, vali_data, vali_loader, setting):
-        """
-        Phase 2: 训练 base model, A 固定。
-        """
-        print("\n================= Phase 2: Train Base Model with Fixed A =================\n")
-        # 固定 A
-        disable_grad(self.A)
-        self.A.eval()
-
         enable_grad(self.model)
-        self.model.train()
 
-        # 路径
-        ckpt_dir = os.path.join(self.args.checkpoints, setting)
-        os.makedirs(ckpt_dir, exist_ok=True)
-        res_path = os.path.join(self.args.results, setting)
-        os.makedirs(res_path, exist_ok=True)
+        A_optim = self._select_optimizer(self.A, self.meta_lr, optim_type=getattr(self.args, 'meta_optim_type', 'Adam'))
+        A_scheduler = Scheduler(A_optim, self.args, self.args.warmup_epochs)
 
-        if self.writer is None:
-            self.writer = self._create_writer(res_path)
+        time_now = time.time()
+        meta_epoch = 0
+        for epoch in range(self.args.warmup_epochs):
+            meta_epoch = epoch + 1
+            total_meta_loss = 0
+            task_losses = []
 
+            meta_lr_cur = A_scheduler.get_lr()
+            self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_lr', meta_lr_cur, self.epoch)
+
+            self.model.train()
+            self.A.train()
+
+            A_optim.zero_grad()
+            epoch_time = time.time()
+            # 遍历所有任务，累积meta loss
+            for task_id, (support_loader, query_loader) in enumerate(zip(support_loader_list, query_loader_list)):
+                meta_loss = self.ml3_task_meta_loss(task_id, support_loader, query_loader)
+                
+                if meta_loss is not None:
+                    total_meta_loss += meta_loss
+                    valid_tasks += 1
+                    task_losses.append(meta_loss.item())
+                    
+                    if (task_id + 1) % 10 == 0:
+                        print(f"\tMeta Train - Task: {task_id + 1}/{len(support_loader_list)}, Epoch: {self.epoch} | Task Meta Loss: {meta_loss.item():.7f}")
+                
+                self.step += 1
+            
+            # 统一进行损失函数参数的更新
+            if valid_tasks > 0:
+                avg_meta_loss = total_meta_loss / valid_tasks
+                
+                # 反向传播并更新损失函数参数
+                avg_meta_loss.backward()
+                
+                # 梯度裁剪（可选）
+                if hasattr(self.args, 'max_norm') and self.args.max_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(self.A.parameters(), self.args.max_norm)
+                
+                # 更新损失函数参数
+                A_optim.step()
+                
+                avg_meta_loss_val = avg_meta_loss.item()
+            else:
+                avg_meta_loss_val = 0.0
+            
+            # 记录日志
+            self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_loss', avg_meta_loss_val, self.epoch)
+            log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/meta_train_loss_matrix', self.epoch)
+            
+            print(f"Meta Train Epoch: {self.epoch} | Avg Meta Loss: {avg_meta_loss_val:.7f} ({valid_tasks} tasks)")
+            print(f"Meta Train Epoch: {self.epoch} cost time: {time.time() - epoch_time:.2f}s")
+            
+            if self.args.lradj not in ['TST']:
+                A_scheduler.step(avg_meta_loss_val, self.epoch)
+            else:
+                A_scheduler.step(verbose=True)
+        
+        # 保存学习到的损失函数
+        best_loss_path = os.path.join(path, 'cov_loss.pth')
+        torch.save(self.A, best_loss_path)
+        print(f"Saved learned loss function to {best_loss_path}")
+        
+        print(f"\nMeta Train Phase completed!")
+        print("Learned loss function is ready for meta test phase")
+
+    def meta_test_phase(self, train_loader, vali_data, vali_loader, criterion, path, res_path):
+        """ML3 Meta Test 阶段：重新初始化模型，使用学习到的损失函数训练模型"""
+        print(f"\n{'='*50}")
+        print(f"Starting ML3 Meta Test Phase for {self.test_epochs} epochs")
+        print(f"Model will be reset to initial state")
+        print(f"Using learned loss function to train the model")
+        print(f"{'='*50}\n")
+        
+        # 关键步骤：重新初始化模型到初始状态
+        self.reset_model_to_initial_state()
+        
+        # 固定损失函数参数，训练模型参数
+        disable_grad(self.A)
+        enable_grad(self.model)
+        
         model_optim = self._select_optimizer(self.model, self.lr)
         scheduler = Scheduler(model_optim, self.args, len(train_loader))
+        
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
-
-        criterion = self._select_criterion()
-
-        for epoch in range(1, self.train_epochs + 1):
-            t0 = time.time()
-            self.model.train()
-            iter_losses_cov, iter_losses_mse = [], []
-
+        time_now = time.time()
+        
+        for epoch in range(self.test_epochs):
+            self.epoch = self.meta_epochs + epoch + 1  # 继续epoch计数
+            iter_count = 0
+            train_loss_learned, train_loss_mse = [], []
+            
+            lr_cur = scheduler.get_lr()
+            self.writer.add_scalar(f'{self.pred_len}/meta_test/lr', lr_cur, self.epoch)
+            
+            epoch_time = time.time()
+            
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(train_loader):
+                self.model.train()
+                self.A.eval()
+                
+                iter_count += 1
                 model_optim.zero_grad()
-                outputs, batch_y, _ = self.forward_step(
-                    batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle
-                )
-                loss_cov = self.A.get_loss(outputs, batch_y)
-                loss_cov.backward()
+                
+                outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
+                
+                # 使用学习到的损失函数训练模型
+                loss_learned = self.A.get_loss(outputs, batch_y)
+                loss_learned.backward()
+                
+                # 梯度裁剪（可选）
+                if hasattr(self.args, 'max_norm') and self.args.max_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.max_norm)
+                
                 model_optim.step()
-
+                
+                # 记录标准MSE损失用于监控
                 with torch.no_grad():
                     loss_mse = criterion(outputs, batch_y)
-
-                iter_losses_cov.append(loss_cov.item())
-                iter_losses_mse.append(loss_mse.item())
-
-                self.train_global_step += 1
-                if self.train_global_step % 100 == 0:
-                    print(f"[Train][Epoch {epoch}] Iter {i+1}/{len(train_loader)} "
-                          f"| CovLoss: {loss_cov.item():.5f} | MSE: {loss_mse.item():.5f}")
-
-            # 学习率调度（逐 step 策略）
-            if getattr(self.args, 'lradj', None) in ['TST']:
-                scheduler.step(verbose=False)
-
-            mean_cov = np.mean(iter_losses_cov)
-            mean_mse = np.mean(iter_losses_mse)
-
-            vali_mse, vali_cov = self.vali(vali_data, vali_loader, criterion)
-
-            self.writer.add_scalar(f'{self.pred_len}/train/loss_cov', mean_cov, epoch)
-            self.writer.add_scalar(f'{self.pred_len}/train/loss_mse', mean_mse, epoch)
-            self.writer.add_scalar(f'{self.pred_len}/vali/loss_cov', vali_cov, epoch)
-            self.writer.add_scalar(f'{self.pred_len}/vali/loss_mse', vali_mse, epoch)
-            log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/base/cov_mat', epoch)
-
-            print(f"[Base][Epoch {epoch}] Time: {time.time() - t0:.2f}s | "
-                  f"Train Cov: {mean_cov:.5f}, Train MSE: {mean_mse:.5f} | "
-                  f"Vali Cov: {vali_cov:.5f}, Vali MSE: {vali_mse:.5f}")
-
-            other_to_save = {'A_meta_fixed': self.A}
-            improved = early_stopping(vali_mse, self.model, ckpt_dir, **other_to_save)
+                
+                train_loss_learned.append(loss_learned.item())
+                train_loss_mse.append(loss_mse.item())
+                
+                self.step += 1
+                self.writer.add_scalar(f'{self.pred_len}/meta_test_iter/loss_learned', loss_learned.item(), self.step)
+                self.writer.add_scalar(f'{self.pred_len}/meta_test_iter/loss_mse', loss_mse.item(), self.step)
+                
+                if (i + 1) % 100 == 0:
+                    print(f"\tMeta Test - iters: {i + 1}, epoch: {self.epoch} | learned loss: {loss_learned.item():.7f}, mse loss: {loss_mse.item():.7f}")
+                    cost_time = time.time() - time_now
+                    speed = cost_time / iter_count
+                    left_time = speed * ((self.test_epochs - epoch) * len(train_loader) - i)
+                    print(f'\tspeed: {speed:.4f}s/iter; cost time: {cost_time:.4f}s; left time: {left_time:.4f}s')
+                    iter_count = 0
+                    time_now = time.time()
+                
+                if self.args.lradj in ['TST']:
+                    scheduler.step(verbose=(i + 1 == len(train_loader)))
+            
+            avg_train_loss_learned = np.mean(train_loss_learned)
+            avg_train_loss_mse = np.mean(train_loss_mse)
+            
+            # 在meta test阶段进行validation
+            valid_loss_mse, valid_loss_learned = self.vali(vali_data, vali_loader, criterion)
+            
+            self.writer.add_scalar(f'{self.pred_len}/meta_test/train_loss_learned', avg_train_loss_learned, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/meta_test/train_loss_mse', avg_train_loss_mse, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/meta_test/valid_loss_learned', valid_loss_learned, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/meta_test/valid_loss_mse', valid_loss_mse, self.epoch)
+            log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/meta_test_loss_matrix', self.epoch)
+            
+            print(f"Meta Test Epoch: {self.epoch} | Train Learned: {avg_train_loss_learned:.7f}, MSE: {avg_train_loss_mse:.7f} | Valid Learned: {valid_loss_learned:.7f}, MSE: {valid_loss_mse:.7f}")
+            print(f"Meta Test Epoch: {self.epoch} cost time: {time.time() - epoch_time:.2f}s")
+            
+            # 在meta test阶段使用early stopping保存最佳模型
+            other_to_save = {'cov_loss': self.A}
+            improved = early_stopping(valid_loss_mse, self.model, path, **other_to_save)
+            
             if early_stopping.early_stop:
-                print("[Base] Early stopping.")
+                print("Meta Test Early stopping")
                 break
-
-            if getattr(self.args, 'lradj', None) not in ['TST']:
-                scheduler.step(vali_mse, epoch)
-
-        # 加载最优
-        best_model_path = os.path.join(ckpt_dir, 'checkpoint.pth')
-        if os.path.exists(best_model_path):
-            self.model.load_state_dict(torch.load(best_model_path))
-        best_A_path = os.path.join(ckpt_dir, 'A_meta_fixed.pth')
-        if os.path.exists(best_A_path):
-            # 保证 test 时读取
-            self.A = torch.load(best_A_path)
+                
+            if self.args.lradj not in ['TST']:
+                scheduler.step(valid_loss_mse, self.epoch)
+        
+        print(f"\nMeta Test Phase completed! Best validation MSE: {early_stopping.best_score:.7f}")
 
     def train(self, setting, prof=None):
-        """
-        总训练入口：Phase 1 (meta) -> Phase 2 (base)
-        """
-        # 取数据
         train_data, train_loader = self._get_data(flag='train')
+        support_loader_list, query_loader_list = self.initialize_meta_tasks(train_data)
         vali_data, vali_loader = self._get_data(flag='val')
 
-        # Phase 1
-        if not self.meta_trained:
-            self.meta_train(train_data, vali_loader, setting)
+        path = os.path.join(self.args.checkpoints, setting)
+        os.makedirs(path, exist_ok=True)
+        res_path = os.path.join(self.args.results, setting)
+        os.makedirs(res_path, exist_ok=True)
+        self.writer = self._create_writer(res_path)
 
-        # Phase 2
-        self.base_train(train_loader, vali_data, vali_loader, setting)
+        criterion = self._select_criterion()
+        self.save_initial_model_state()
+
+        # ============ Meta Train 阶段：只训练损失函数 ============
+        self.meta_train(support_loader_list, query_loader_list, criterion, path, res_path)
+        # ============ ML3 Meta Test 阶段：重新初始化模型，使用学习到的损失函数训练 ============
+        self.meta_test_phase(train_loader, vali_data, vali_loader, criterion, path, res_path)
+        
+        # 加载最佳模型和损失函数
+        best_model_path = os.path.join(path, 'checkpoint.pth')
+        if os.path.exists(best_model_path):
+            self.model.load_state_dict(torch.load(best_model_path))
+            print("Loaded best model from meta test phase")
+        
+        best_loss_path = os.path.join(path, 'cov_loss.pth')
+        if os.path.exists(best_loss_path):
+            self.A = torch.load(best_loss_path)
+            print("Loaded best learned loss function")
 
         return self.model
-
-    # =============== Testing ===============
 
     def test(self, setting, prof=None, test=0):
         test_data, test_loader = self._get_data(flag='test')
