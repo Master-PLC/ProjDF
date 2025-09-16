@@ -187,7 +187,7 @@ cython_debug/
 /debug
 
 analyze/*
-!analyze/Meta/
+!analyze/Example/
 !analyze/__init__.py
 !analyze/tools.py
 
