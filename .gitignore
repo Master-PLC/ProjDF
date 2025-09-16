@@ -185,7 +185,11 @@ cython_debug/
 /func
 
 /debug
-# /analyze
+
+analyze/*
+!analyze/Meta/
+!analyze/__init__.py
+!analyze/tools.py
 
 /README_public.md
 
