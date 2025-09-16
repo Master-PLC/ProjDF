@@ -185,7 +185,7 @@ cython_debug/
 /func
 
 /debug
-/analyze
+# /analyze
 
 /README_public.md
 

@@ -1,8 +1,8 @@
 from . import FBM_L, FBM_NL, FBM_NP, LSTM, MICN, PDF, TCN, AdaMSHyper, Autoformer, Crossformer, CycleNet, DLinear, \
     ETSformer, FEDformer, FiLM, Fredformer, FreTS, Informer, Koopa, LightTS, MultiPatchFormer, \
-    Nonstationary_Transformer, PatchTST, PAttn, Pyraformer, Reformer, SCINet, SegRNN, SimpleTM, \
+    Nonstationary_Transformer, PatchMLP, PatchTST, PAttn, Pyraformer, Reformer, SCINet, SegRNN, SimpleTM, \
     TemporalFusionTransformer, TiDE, TimeBridge, TimeKAN, TimeMixer, TimesNet, TimeXer, TQNet, Transformer, TSMixer, \
-    WPMixer, iTransformer
+    WPMixer, iTransformer, xPatch
 
 MODEL_REQUIRES_CYCLE = [
     'CycleNet',
@@ -51,4 +51,6 @@ MODEL_DICT = {
     'PDF': PDF,
     'TQNet': TQNet,
     'TimeBridge': TimeBridge,
+    'PatchMLP': PatchMLP,
+    'xPatch': xPatch,
 }

@@ -10,7 +10,6 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Subset
 
-
 plt.switch_backend('agg')
 
 
@@ -65,6 +64,11 @@ def adjust_learning_rate_only(epoch, args, init_lr=None):
         lr_adjust = {epoch: init_lr if epoch < 3 else init_lr * (0.9 ** ((epoch - 3) // 1))}
     elif args.lradj == "cosine2":
         lr_adjust = {epoch: init_lr / 2 * (1 + math.cos(epoch / args.train_epochs * math.pi))}
+    elif args.lradj == "sigmoid":
+        k = 0.5 # logistic growth rate
+        s = 10  # decreasing curve smoothing rate
+        w = 10  # warm-up coefficient
+        lr_adjust = {epoch: args.learning_rate / (1 + np.exp(-k * (epoch - w))) - args.learning_rate / (1 + np.exp(-k/s * (epoch - w*s)))}
     if epoch in lr_adjust.keys():
         lr = lr_adjust[epoch]
         print('Updating learning rate to {}'.format(lr))
@@ -122,6 +126,12 @@ class Scheduler:
                 optimizer, steps_per_epoch=self.train_steps, epochs=self.train_epochs,
                 max_lr=max_lr, pct_start=self.pct_start
             )
+
+        elif self.scheduler_type == 'sigmoid':
+            k = 0.5 # logistic growth rate
+            s = 10  # decreasing curve smoothing rate
+            w = 10
+            self.scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda epoch: 1 / (1 + np.exp(-k * (epoch - w))) - 1 / (1 + np.exp(-k/s * (epoch - w*s))))
 
         else:
             raise NotImplementedError

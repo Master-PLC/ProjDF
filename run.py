@@ -264,6 +264,10 @@ if __name__ == '__main__':
     parser.add_argument('--attn_dropout', type=float, default=0.15, help='dropout rate of attention map')
     parser.add_argument('--period', type=int, default=24, help='length of patches')
 
+    # xPatch
+    parser.add_argument('--ma_type', type=str, default='ema', help='reg, ema, dema')
+    parser.add_argument('--beta', type=float, default=0.3, help='beta')
+
     args = parser.parse_args()
 
     fix_seed = args.fix_seed
