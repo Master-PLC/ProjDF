@@ -100,7 +100,10 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
         model_args = [batch_x, batch_x_mark, dec_inp, batch_y_mark]
         if self.args.model in MODEL_REQUIRES_CYCLE:
             model_args.append(batch_cycle)
-        outputs, attn = self.model(*model_args) if self.args.output_attention else self.model(*model_args), None
+        if self.args.output_attention:
+            outputs, attn = self.model(*model_args)
+        else:
+            outputs, attn = self.model(*model_args), None
 
         f_dim = -1 if self.args.features == 'MS' else 0
         predictions = outputs = outputs[:, -self.pred_len:, f_dim:]

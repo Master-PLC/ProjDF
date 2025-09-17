@@ -1,8 +1,9 @@
+from math import sqrt
+
+import pywt
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from math import sqrt
-import pywt
 
 
 class WaveletEmbedding(nn.Module):
@@ -169,6 +170,6 @@ class GeomAttention(nn.Module):
         V = torch.einsum("bhls,bshd->blhd", A, values)
 
         if self.output_attention:
-            return (V.contiguous(), scores.abs().mean())
+            return V.contiguous(), scores.abs().mean()
         else:
-            return V.contiguous()
+            return V.contiguous(), None

@@ -1,11 +1,12 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from layers.Autoformer_EncDec import series_decomp
+from layers.ChebyKANLayer import ChebyKANLinear
 from layers.Embed import DataEmbedding_wo_pos
 from layers.StandardNorm import Normalize
-from layers.ChebyKANLayer import ChebyKANLinear
-import math
 
 
 class ChebyKANLayer(nn.Module):
@@ -20,16 +21,14 @@ class ChebyKANLayer(nn.Module):
         x = self.fc1(x.reshape(B*N,C))
         x = x.reshape(B,N,-1).contiguous()
         return x
-    
+
 
 class FrequencyDecomp(nn.Module):
-
     def __init__(self, configs):
         super(FrequencyDecomp, self).__init__()
         self.configs = configs
 
     def forward(self, level_list):
-      
         level_list_reverse = level_list.copy()
         level_list_reverse.reverse()
         out_low = level_list_reverse[0]
@@ -47,7 +46,7 @@ class FrequencyDecomp(nn.Module):
             out_level_list.append(out_high_left) 
         out_level_list.reverse()
         return out_level_list   
-    
+
     def frequency_interpolation(self,x,seq_len,target_len):
         len_ratio = seq_len/target_len
         x_fft = torch.fft.rfft(x, dim=2)
@@ -56,7 +55,7 @@ class FrequencyDecomp(nn.Module):
         out = torch.fft.irfft(out_fft, dim=2)
         out = out * len_ratio
         return out
-    
+
 
 class FrequencyMixing(nn.Module):
 
@@ -66,8 +65,7 @@ class FrequencyMixing(nn.Module):
         self.front_block = M_KAN(configs.d_model,
                                  self.configs.seq_len // (self.configs.down_sampling_window ** (self.configs.down_sampling_layers)),
                                  order=configs.begin_order)
-                  
-          
+
         self.front_blocks = torch.nn.ModuleList(
                 [
                     M_KAN(configs.d_model,
@@ -75,7 +73,7 @@ class FrequencyMixing(nn.Module):
                           order=i+configs.begin_order+1)
                     for i in range(configs.down_sampling_layers)
                 ])
-     
+
     def forward(self, level_list):
         level_list_reverse = level_list.copy()
         level_list_reverse.reverse()
@@ -105,7 +103,8 @@ class FrequencyMixing(nn.Module):
         out = torch.fft.irfft(out_fft, dim=2)
         out = out * len_ratio
         return out
-    
+
+
 class M_KAN(nn.Module):
     def __init__(self,d_model,seq_len,order):
         super().__init__()
@@ -118,6 +117,7 @@ class M_KAN(nn.Module):
         x2 = self.conv(x)
         out  = x1 + x2
         return out 
+
 
 class BasicConv(nn.Module):
     def __init__(self,c_in,c_out, kernel_size, degree,stride=1, padding=0, dilation=1, groups=1, act=False, bn=False, bias=False,dropout=0.):
@@ -158,7 +158,6 @@ class Model(nn.Module):
         self.enc_in = configs.enc_in
         self.use_future_temporal_feature = configs.use_future_temporal_feature
 
-
         self.enc_embedding = DataEmbedding_wo_pos(1, configs.d_model, configs.embed, configs.freq,
                                                       configs.dropout)
         self.layer = configs.e_layers
@@ -170,7 +169,7 @@ class Model(nn.Module):
         )
         self.projection_layer = nn.Linear(
                     configs.d_model, 1, bias=True)
-        self.predict_layer =nn. Linear(
+        self.predict_layer = nn.Linear(
                         configs.seq_len,
                         configs.pred_len,
                     )
@@ -184,7 +183,6 @@ class Model(nn.Module):
             x = x.permute(0, 2, 1).contiguous().reshape(B * N, T, 1)
             x_list.append(x)
 
-       
         enc_out_list = []
         for i, x in zip(range(len(x_list)), x_list):
             enc_out = self.enc_embedding(x, None)  # [B,T,C]
@@ -200,7 +198,6 @@ class Model(nn.Module):
         dec_out = self.projection_layer(dec_out).reshape(B, self.configs.c_out, self.pred_len).permute(0, 2, 1).contiguous()
         dec_out = self.normalize_layers[0](dec_out, 'denorm')
         return dec_out
-    
 
     def __multi_level_process_inputs(self, x_enc):
         down_pool = torch.nn.AvgPool1d(self.configs.down_sampling_window)
@@ -216,10 +213,9 @@ class Model(nn.Module):
         x_enc = x_enc_sampling_list
         return x_enc
 
-    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
+    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None, *args):
         if 'long_term_forecast' in self.task_name or self.task_name == 'short_term_forecast':
             dec_out = self.forecast(x_enc)
             return dec_out
         else:
             raise ValueError('Other tasks implemented yet')
-

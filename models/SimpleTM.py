@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from layers.Transformer_Encoder import Encoder, EncoderLayer
-from layers.SWTAttention_Family import GeomAttentionLayer, GeomAttention
 from layers.Embed import DataEmbedding_inverted
+from layers.SWTAttention_Family import GeomAttention, GeomAttentionLayer
+from layers.Transformer_Encoder import Encoder, EncoderLayer
 
 
 class Model(nn.Module):
@@ -50,7 +50,6 @@ class Model(nn.Module):
         projector = nn.Linear(configs.d_model, self.pred_len, bias=True)
         self.projector = projector
 
-
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
         if self.use_norm:
             means = x_enc.mean(1, keepdim=True).detach()
@@ -79,7 +78,6 @@ class Model(nn.Module):
 
         return dec_out, attns
 
-
-    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
+    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None, *args):
         dec_out, attns = self.forecast(x_enc, None, None, None)
-        return dec_out, attns 
+        return dec_out, attns

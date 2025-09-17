@@ -199,8 +199,10 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
         if self.args.model in MODEL_REQUIRES_CYCLE:
             model_args.append(batch_cycle)
         model_args = tuple(model_args)
-        outputs, attn = functional_call(model, params, model_args) if self.args.output_attention \
-            else functional_call(model, params, model_args), None
+        if self.args.output_attention:
+            outputs, attn = functional_call(model, params, model_args)
+        else:
+            outputs, attn = functional_call(model, params, model_args), None
 
         f_dim = -1 if self.args.features == 'MS' else 0
         outputs = outputs[:, -self.pred_len:, f_dim:]
