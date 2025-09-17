@@ -25,9 +25,9 @@ job_number=0
 DATA_ROOT=./dataset
 EXP_NAME=finetune
 seed=2023
-des='TimeBridge'
+des='TQNet'
 
-model_name=TimeBridge
+model_name=TQNet
 auxi_mode=fft_ot
 # datasets=(ECL Traffic Weather PEMS03 PEMS08)
 datasets=(ETTh1)
@@ -40,30 +40,21 @@ normalize=1
 auxi_loss=None
 ot_type=upper_bound
 train_epochs=100
-patience=15
+patience=10
 test_batch_size=1
 mask_factor=0.0
-alp=0.35
-ca_layers=0
-pd_layers=1
-ia_layers=3
-d_model=128
-d_ff=128
-n_heads=8
-period=24
-num_p=0
-dropout=0.0
-attn_dropout=0.15
-stable_len=6
+ma_type=ema
+alp=0.3
+beta=0.3
 rerun=0
 
 pl_list=(96 192 336 720)
 alpha_list=(0.1 0.3 0.5)
-lr_list=(0.0005 0.0002 0.001)
+lr_list=(0.001 0.0005)
 distance_list=(wasserstein_empirical_per_dim)
-lradj_list=(type1)
+lradj_list=(sigmoid type1)
 joint_forecast_list=(1)
-bs_list=(32 64)
+bs_list=(64)
 eps_list=(1e-9)
 reg_sk_list=(0.005)
 vw_list=(0.01 0.005 0.002)
@@ -85,9 +76,7 @@ for pl in ${pl_list[@]}; do
         continue
     fi
 
-    rl=$(echo "1 - $alpha" | bc)
-    decimal_places=$(echo "$alpha" | awk -F. '{print length($2)}')
-    rl=$(printf "%.${decimal_places}f" $rl)
+    rl=1.0
     ax=$alpha
 
     JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}
@@ -162,18 +151,9 @@ for pl in ${pl_list[@]}; do
             --test_results $TEST_RESULTS \
             --log_path $LOG_PATH \
             --rerun $rerun \
+            --ma_type $ma_type \
             --alpha $alp \
-            --d_model $d_model \
-            --d_ff $d_ff \
-            --ca_layers $ca_layers \
-            --pd_layers $pd_layers \
-            --ia_layers $ia_layers \
-            --num_p $num_p \
-            --n_heads $n_heads \
-            --period $period \
-            --attn_dropout $attn_dropout \
-            --stable_len $stable_len \
-            --dropout $dropout \
+            --beta $beta \
             --var_weight $var_weight
 
         sleep 5
@@ -200,30 +180,21 @@ normalize=1
 auxi_loss=None
 ot_type=upper_bound
 train_epochs=100
-patience=15
+patience=10
 test_batch_size=1
 mask_factor=0.0
-alp=0.35
-ca_layers=0
-pd_layers=1
-ia_layers=3
-d_model=128
-d_ff=128
-n_heads=4
-period=48
-num_p=0
-dropout=0.0
-attn_dropout=0.15
-stable_len=6
+ma_type=ema
+alp=0.3
+beta=0.3
 rerun=0
 
 pl_list=(96 192 336 720)
 alpha_list=(0.1 0.3 0.5)
-lr_list=(0.0001 0.0005 0.001)
+lr_list=(0.001 0.0005)
 distance_list=(wasserstein_empirical_per_dim)
-lradj_list=(type1)
+lradj_list=(sigmoid type1)
 joint_forecast_list=(1)
-bs_list=(32 16)
+bs_list=(64)
 eps_list=(1e-9)
 reg_sk_list=(0.005)
 vw_list=(0.01 0.005 0.002)
@@ -244,9 +215,7 @@ for pl in ${pl_list[@]}; do
         continue
     fi
 
-    rl=$(echo "1 - $alpha" | bc)
-    decimal_places=$(echo "$alpha" | awk -F. '{print length($2)}')
-    rl=$(printf "%.${decimal_places}f" $rl)
+    rl=1.0
     ax=$alpha
 
     JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}
@@ -321,18 +290,9 @@ for pl in ${pl_list[@]}; do
             --test_results $TEST_RESULTS \
             --log_path $LOG_PATH \
             --rerun $rerun \
+            --ma_type $ma_type \
             --alpha $alp \
-            --d_model $d_model \
-            --d_ff $d_ff \
-            --ca_layers $ca_layers \
-            --pd_layers $pd_layers \
-            --ia_layers $ia_layers \
-            --num_p $num_p \
-            --n_heads $n_heads \
-            --period $period \
-            --attn_dropout $attn_dropout \
-            --stable_len $stable_len \
-            --dropout $dropout \
+            --beta $beta \
             --var_weight $var_weight
 
         sleep 5
@@ -361,30 +321,21 @@ normalize=1
 auxi_loss=None
 ot_type=upper_bound
 train_epochs=100
-patience=15
+patience=10
 test_batch_size=1
 mask_factor=0.0
-alp=0.35
-ca_layers=0
-pd_layers=1
-ia_layers=3
-d_model=64
-d_ff=128
-n_heads=4
-period=48
-num_p=6
-dropout=0.0
-attn_dropout=0.15
-stable_len=6
+ma_type=ema
+alp=0.3
+beta=0.3
 rerun=0
 
 pl_list=(96 192 336 720)
 alpha_list=(0.1 0.3 0.5)
-lr_list=(0.0005 0.001)
+lr_list=(0.001 0.0005)
 distance_list=(wasserstein_empirical_per_dim)
-lradj_list=(TST)
+lradj_list=(sigmoid type1)
 joint_forecast_list=(1)
-bs_list=(32 64)
+bs_list=(64)
 eps_list=(1e-9)
 reg_sk_list=(0.005)
 vw_list=(0.01 0.005 0.002)
@@ -406,9 +357,7 @@ for pl in ${pl_list[@]}; do
         continue
     fi
 
-    rl=$(echo "1 - $alpha" | bc)
-    decimal_places=$(echo "$alpha" | awk -F. '{print length($2)}')
-    rl=$(printf "%.${decimal_places}f" $rl)
+    rl=1.0
     ax=$alpha
 
     JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}
@@ -483,18 +432,9 @@ for pl in ${pl_list[@]}; do
             --test_results $TEST_RESULTS \
             --log_path $LOG_PATH \
             --rerun $rerun \
+            --ma_type $ma_type \
             --alpha $alp \
-            --d_model $d_model \
-            --d_ff $d_ff \
-            --ca_layers $ca_layers \
-            --pd_layers $pd_layers \
-            --ia_layers $ia_layers \
-            --num_p $num_p \
-            --n_heads $n_heads \
-            --period $period \
-            --attn_dropout $attn_dropout \
-            --stable_len $stable_len \
-            --dropout $dropout \
+            --beta $beta \
             --var_weight $var_weight
 
         sleep 5
@@ -524,30 +464,21 @@ normalize=1
 auxi_loss=None
 ot_type=upper_bound
 train_epochs=100
-patience=15
+patience=10
 test_batch_size=1
 mask_factor=0.0
-alp=0.35
-ca_layers=0
-pd_layers=1
-ia_layers=3
-d_model=64
-d_ff=128
-n_heads=4
-period=48
-num_p=0
-dropout=0.0
-attn_dropout=0.15
-stable_len=6
+ma_type=ema
+alp=0.3
+beta=0.3
 rerun=0
 
 pl_list=(96 192 336 720)
 alpha_list=(0.1 0.3 0.5)
-lr_list=(0.0005 0.0002)
+lr_list=(0.001 0.0005)
 distance_list=(wasserstein_empirical_per_dim)
-lradj_list=(type1)
+lradj_list=(sigmoid type1)
 joint_forecast_list=(1)
-bs_list=(64 32)
+bs_list=(64)
 eps_list=(1e-9)
 reg_sk_list=(0.005)
 vw_list=(0.01 0.005 0.002)
@@ -569,9 +500,7 @@ for pl in ${pl_list[@]}; do
         continue
     fi
 
-    rl=$(echo "1 - $alpha" | bc)
-    decimal_places=$(echo "$alpha" | awk -F. '{print length($2)}')
-    rl=$(printf "%.${decimal_places}f" $rl)
+    rl=1.0
     ax=$alpha
 
     JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}
@@ -646,18 +575,9 @@ for pl in ${pl_list[@]}; do
             --test_results $TEST_RESULTS \
             --log_path $LOG_PATH \
             --rerun $rerun \
+            --ma_type $ma_type \
             --alpha $alp \
-            --d_model $d_model \
-            --d_ff $d_ff \
-            --ca_layers $ca_layers \
-            --pd_layers $pd_layers \
-            --ia_layers $ia_layers \
-            --num_p $num_p \
-            --n_heads $n_heads \
-            --period $period \
-            --attn_dropout $attn_dropout \
-            --stable_len $stable_len \
-            --dropout $dropout \
+            --beta $beta \
             --var_weight $var_weight
 
         sleep 5
@@ -684,29 +604,20 @@ dst=ECL
 normalize=1
 auxi_loss=None
 ot_type=upper_bound
-train_epochs=10
-patience=3
+train_epochs=100
+patience=10
 test_batch_size=1
 mask_factor=0.0
-alp=0.2
-ca_layers=2
-pd_layers=1
-ia_layers=1
-d_model=512
-d_ff=512
-n_heads=32
-period=24
-num_p=4
-dropout=0.0
-attn_dropout=0.1
-stable_len=4
+ma_type=ema
+alp=0.3
+beta=0.3
 rerun=0
 
 pl_list=(96 192 336 720)
 alpha_list=(0.1 0.3 0.5)
-lr_list=(0.0005 0.001)
+lr_list=(0.001 0.0005)
 distance_list=(wasserstein_empirical_per_dim)
-lradj_list=(type1)
+lradj_list=(sigmoid type1)
 joint_forecast_list=(1)
 bs_list=(16)
 eps_list=(1e-9)
@@ -729,9 +640,7 @@ for pl in ${pl_list[@]}; do
         continue
     fi
 
-    rl=$(echo "1 - $alpha" | bc)
-    decimal_places=$(echo "$alpha" | awk -F. '{print length($2)}')
-    rl=$(printf "%.${decimal_places}f" $rl)
+    rl=1.0
     ax=$alpha
 
     JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}
@@ -806,18 +715,9 @@ for pl in ${pl_list[@]}; do
             --test_results $TEST_RESULTS \
             --log_path $LOG_PATH \
             --rerun $rerun \
+            --ma_type $ma_type \
             --alpha $alp \
-            --d_model $d_model \
-            --d_ff $d_ff \
-            --ca_layers $ca_layers \
-            --pd_layers $pd_layers \
-            --ia_layers $ia_layers \
-            --num_p $num_p \
-            --n_heads $n_heads \
-            --period $period \
-            --attn_dropout $attn_dropout \
-            --stable_len $stable_len \
-            --dropout $dropout \
+            --beta $beta \
             --var_weight $var_weight
 
         sleep 5
@@ -846,28 +746,19 @@ normalize=1
 auxi_loss=None
 ot_type=upper_bound
 train_epochs=100
-patience=5
+patience=10
 test_batch_size=1
 mask_factor=0.0
-alp=0.35
-ca_layers=3
-pd_layers=1
-ia_layers=1
-d_model=512
-d_ff=512
-n_heads=64
-period=24
-num_p=8
-dropout=0.0
-attn_dropout=0.15
-stable_len=2
+ma_type=ema
+alp=0.3
+beta=0.3
 rerun=0
 
 pl_list=(96 192 336 720)
 alpha_list=(0.1 0.3 0.5)
-lr_list=(0.0005 0.001)
+lr_list=(0.001 0.0005)
 distance_list=(wasserstein_empirical_per_dim)
-lradj_list=(type1)
+lradj_list=(sigmoid type1)
 joint_forecast_list=(1)
 bs_list=(16)
 eps_list=(1e-9)
@@ -890,9 +781,7 @@ for pl in ${pl_list[@]}; do
         continue
     fi
 
-    rl=$(echo "1 - $alpha" | bc)
-    decimal_places=$(echo "$alpha" | awk -F. '{print length($2)}')
-    rl=$(printf "%.${decimal_places}f" $rl)
+    rl=1.0
     ax=$alpha
 
     JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}
@@ -967,18 +856,9 @@ for pl in ${pl_list[@]}; do
             --test_results $TEST_RESULTS \
             --log_path $LOG_PATH \
             --rerun $rerun \
+            --ma_type $ma_type \
             --alpha $alp \
-            --d_model $d_model \
-            --d_ff $d_ff \
-            --ca_layers $ca_layers \
-            --pd_layers $pd_layers \
-            --ia_layers $ia_layers \
-            --num_p $num_p \
-            --n_heads $n_heads \
-            --period $period \
-            --attn_dropout $attn_dropout \
-            --stable_len $stable_len \
-            --dropout $dropout \
+            --beta $beta \
             --var_weight $var_weight
 
         sleep 5
@@ -1006,30 +886,21 @@ normalize=1
 auxi_loss=None
 ot_type=upper_bound
 train_epochs=100
-patience=15
+patience=10
 test_batch_size=1
 mask_factor=0.0
-alp=0.1
-ca_layers=1
-pd_layers=1
-ia_layers=1
-d_model=128
-d_ff=128
-n_heads=8
-period=48
-num_p=12
-dropout=0.0
-attn_dropout=0.15
-stable_len=6
+ma_type=ema
+alp=0.3
+beta=0.3
 rerun=0
 
 pl_list=(96 192 336 720)
 alpha_list=(0.1 0.3 0.5)
-lr_list=(0.0005 0.001)
+lr_list=(0.001 0.0005)
 distance_list=(wasserstein_empirical_per_dim)
-lradj_list=(type1)
+lradj_list=(sigmoid type1)
 joint_forecast_list=(1)
-bs_list=(32)
+bs_list=(64)
 eps_list=(1e-9)
 reg_sk_list=(0.005)
 vw_list=(0.01 0.005 0.002)
@@ -1050,9 +921,7 @@ for pl in ${pl_list[@]}; do
         continue
     fi
 
-    rl=$(echo "1 - $alpha" | bc)
-    decimal_places=$(echo "$alpha" | awk -F. '{print length($2)}')
-    rl=$(printf "%.${decimal_places}f" $rl)
+    rl=1.0
     ax=$alpha
 
     JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}
@@ -1127,18 +996,9 @@ for pl in ${pl_list[@]}; do
             --test_results $TEST_RESULTS \
             --log_path $LOG_PATH \
             --rerun $rerun \
+            --ma_type $ma_type \
             --alpha $alp \
-            --d_model $d_model \
-            --d_ff $d_ff \
-            --ca_layers $ca_layers \
-            --pd_layers $pd_layers \
-            --ia_layers $ia_layers \
-            --num_p $num_p \
-            --n_heads $n_heads \
-            --period $period \
-            --attn_dropout $attn_dropout \
-            --stable_len $stable_len \
-            --dropout $dropout \
+            --beta $beta \
             --var_weight $var_weight
 
         sleep 5
@@ -1166,30 +1026,21 @@ normalize=1
 auxi_loss=None
 ot_type=upper_bound
 train_epochs=100
-patience=15
+patience=10
 test_batch_size=1
 mask_factor=0.0
-alp=0.2
-ca_layers=2
-pd_layers=1
-ia_layers=1
-d_model=512
-d_ff=512
-n_heads=32
-period=24
-num_p=4
-dropout=0.0
-attn_dropout=0.1
-stable_len=4
+ma_type=ema
+alp=0.3
+beta=0.3
 rerun=0
 
 pl_list=(12 24 36 48)
 alpha_list=(0.1 0.3 0.5)
-lr_list=(0.0005 0.001)
+lr_list=(0.001 0.0005)
 distance_list=(wasserstein_empirical_per_dim)
-lradj_list=(type1)
+lradj_list=(sigmoid type1)
 joint_forecast_list=(1)
-bs_list=(32)
+bs_list=(64)
 eps_list=(1e-9)
 reg_sk_list=(0.005)
 vw_list=(0.01 0.005 0.002)
@@ -1210,9 +1061,7 @@ for pl in ${pl_list[@]}; do
         continue
     fi
 
-    rl=$(echo "1 - $alpha" | bc)
-    decimal_places=$(echo "$alpha" | awk -F. '{print length($2)}')
-    rl=$(printf "%.${decimal_places}f" $rl)
+    rl=1.0
     ax=$alpha
 
     JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}
@@ -1287,18 +1136,9 @@ for pl in ${pl_list[@]}; do
             --test_results $TEST_RESULTS \
             --log_path $LOG_PATH \
             --rerun $rerun \
+            --ma_type $ma_type \
             --alpha $alp \
-            --d_model $d_model \
-            --d_ff $d_ff \
-            --ca_layers $ca_layers \
-            --pd_layers $pd_layers \
-            --ia_layers $ia_layers \
-            --num_p $num_p \
-            --n_heads $n_heads \
-            --period $period \
-            --attn_dropout $attn_dropout \
-            --stable_len $stable_len \
-            --dropout $dropout \
+            --beta $beta \
             --var_weight $var_weight
 
         sleep 5
@@ -1328,30 +1168,21 @@ normalize=1
 auxi_loss=None
 ot_type=upper_bound
 train_epochs=100
-patience=15
+patience=10
 test_batch_size=1
 mask_factor=0.0
-alp=0.05
-ca_layers=1
-pd_layers=1
-ia_layers=1
-d_model=128
-d_ff=128
-n_heads=8
-period=48
-num_p=12
-dropout=0.0
-attn_dropout=0.15
-stable_len=6
+ma_type=ema
+alp=0.3
+beta=0.3
 rerun=0
 
 pl_list=(12 24 36 48)
 alpha_list=(0.1 0.3 0.5)
 lr_list=(0.001 0.0005)
 distance_list=(wasserstein_empirical_per_dim)
-lradj_list=(type1)
+lradj_list=(sigmoid type1)
 joint_forecast_list=(1)
-bs_list=(32)
+bs_list=(64)
 eps_list=(1e-9)
 reg_sk_list=(0.005)
 vw_list=(0.01 0.005 0.002)
@@ -1373,9 +1204,7 @@ for pl in ${pl_list[@]}; do
         continue
     fi
 
-    rl=$(echo "1 - $alpha" | bc)
-    decimal_places=$(echo "$alpha" | awk -F. '{print length($2)}')
-    rl=$(printf "%.${decimal_places}f" $rl)
+    rl=1.0
     ax=$alpha
 
     JOB_NAME=${model_name}_${dst}_${pl}_${rl}_${ax}_${lr}_${lradj}_${train_epochs}_${patience}_${batch_size}_${eps}_${normalize}_${reg_sk}_${auxi_loss}_${mask_factor}_${distance}_${ot_type}_${joint_forecast}_${auxi_mode}_${var_weight}
@@ -1450,18 +1279,9 @@ for pl in ${pl_list[@]}; do
             --test_results $TEST_RESULTS \
             --log_path $LOG_PATH \
             --rerun $rerun \
+            --ma_type $ma_type \
             --alpha $alp \
-            --d_model $d_model \
-            --d_ff $d_ff \
-            --ca_layers $ca_layers \
-            --pd_layers $pd_layers \
-            --ia_layers $ia_layers \
-            --num_p $num_p \
-            --n_heads $n_heads \
-            --period $period \
-            --attn_dropout $attn_dropout \
-            --stable_len $stable_len \
-            --dropout $dropout \
+            --beta $beta \
             --var_weight $var_weight
 
         sleep 5
