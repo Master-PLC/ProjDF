@@ -8,11 +8,13 @@ import torch
 import torch.nn as nn
 import yaml
 from exp.exp_basic import Exp_Basic
+from models import MODEL_REQUIRES_CYCLE
+from torch.func import functional_call
 from torch.utils.data import DataLoader
 from utils.metrics import metric
 from utils.metrics_torch import create_metric_collector, metric_torch
-from utils.tools import EarlyStopping, Scheduler, disable_grad, enable_grad, log_heatmap, split_dataset_with_overlap, \
-    visual
+from utils.tools import EarlyStopping, Scheduler, clip_grads, disable_grad, enable_grad, log_heatmap, plot_heatmap, \
+    split_dataset, split_dataset_with_overlap, visual
 
 warnings.filterwarnings('ignore')
 
@@ -26,24 +28,30 @@ class CovarianceMatrix(nn.Module):
         self.eps = 1e-6
         self.auxi_loss = args.auxi_loss
 
-    def _get_L(self):
+    def _get_L(self, params=None):
+        if params is None:
+            L_param = self.L_param
+        else:
+            L_param = params['L_param']
+
         # 取下三角并在对角线加 eps，确保正定
-        L = torch.tril(self.L_param)
+        L = torch.tril(L_param)
         diag = torch.diag_embed(torch.diagonal(L, dim1=-2, dim2=-1) + self.eps)
         L = L - torch.diag_embed(torch.diagonal(L, dim1=-2, dim2=-1)) + diag
         return L
 
-    def forward(self):
-        L = self._get_L()
+    def forward(self, params=None):
+        L = self._get_L(params)
         return L @ L.transpose(-1, -2)               # Σ = L Lᵀ
 
-    def get_inverse(self):
-        L = self._get_L()
+    def get_inverse(self, params=None):
+        L = self._get_L(params)
         A = L @ L.transpose(-1, -2)
         return torch.linalg.inv(A)
 
-    def get_loss(self, pred, target):
-        L = self._get_L()  # [P, P] 下三角矩阵
+    def get_loss(self, pred, target, params=None):
+        """ML3 Learned Loss Function"""
+        L = self._get_L(params)  # [P, P] 下三角矩阵
 
         E = pred - target  # [B, P, D]
         E_flat = E.permute(0, 2, 1).reshape(-1, self.pred_len)  # [B*D, P]
@@ -66,12 +74,7 @@ class CovarianceMatrix(nn.Module):
             raise AttributeError(f"No defined loss type for {self.auxi_loss}.")
 
         if self.args.reg_lambda > 0:
-            # force A to be close to identity matrix
-            # I = torch.eye(self.pred_len, device=self.device)
-            # reg_loss = torch.norm(fast_A() - I, p='fro') ** 2
-            # loss += self.args.reg_lambda * reg_loss
-
-            Sigma = self.forward()  # [P, P]
+            Sigma = self.forward(params)  # [P, P]
             off_diag = Sigma - torch.diag_embed(torch.diagonal(Sigma))
             reg_loss = torch.norm(off_diag, p='fro') ** 2
             loss += self.args.reg_lambda * reg_loss
@@ -85,7 +88,17 @@ def get_projection(A):
     return Am.detach().cpu().numpy()  # 返回 numpy 数组
 
 
-class Exp_Long_Term_Forecast_META_Reptile(Exp_Basic):
+def get_param_dict(module):
+    # 返回 OrderedDict，适用于 functional forward
+    return dict(module.named_parameters())
+
+
+def update_param_dict(param_dict, grads, lr):
+    # param_dict: dict key->tensor, grads: dict key->grad
+    return {k: v - lr * grads[k] for k, v in param_dict.items()}
+
+
+class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
     def __init__(self, args):
         super().__init__(args)
         self.pred_len = args.pred_len
@@ -94,9 +107,18 @@ class Exp_Long_Term_Forecast_META_Reptile(Exp_Basic):
         self.lr = args.learning_rate
         self.inner_lr = args.inner_lr
         self.meta_lr = args.meta_lr
+        self.first_order = args.first_order
+        self.model_per_task = args.model_per_task
+        self.num_tasks = args.num_tasks
 
         self.A = CovarianceMatrix(self.args).to(self.device)
-        disable_grad(self.A)  # A is not trainable in the beginning
+        self.task_models = [self.model]
+        if self.model_per_task:
+            for _ in range(1, self.num_tasks):
+                task_model = self._build_model().to(self.device)
+                self.task_models.append(task_model)
+        else:
+            self.task_models = [self.model] * self.num_tasks
 
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
@@ -112,78 +134,158 @@ class Exp_Long_Term_Forecast_META_Reptile(Exp_Basic):
                 pred = outputs.detach()
                 true = batch_y.detach()
 
-                loss = criterion(pred, true)
-                cov_loss = self.A.get_loss(pred, true)
+                loss = criterion(pred, true)  # 标准损失
+                cov_loss = self.A.get_loss(pred, true)  # 学习到的损失
 
                 total_loss.append(loss)
                 total_cov_loss.append(cov_loss)
 
         print('Validation cost time: {}'.format(time.time() - eval_time))
-        total_loss = torch.mean(torch.stack(total_loss)).item()  # average loss
+        total_loss = torch.mean(torch.stack(total_loss)).item()
         total_cov_loss = torch.mean(torch.stack(total_cov_loss)).item()
 
         self.model.train()
         self.A.train()
         return total_loss, total_cov_loss
 
-    def inner_loop(self, task_id, task_loader):
-        losses = []
+    def inner_loop(self, task_id, support_loader, query_loader):
+        # 获取当前模型参数（每个meta epoch都从当前状态开始，而不是初始状态）
+        task_model = self.task_models[task_id]
+        model_params_init = get_param_dict(task_model)
 
-        fast_A = CovarianceMatrix(self.args).to(self.device)
-        fast_A.load_state_dict(self.A.state_dict())  # copy A to fast_A
-        fast_A.train()
-        optimizer = self._select_optimizer(fast_A, lr=self.inner_lr, optim_type=self.args.meta_optim_type)
-
+        # 内层循环：使用学习到的损失函数训练模型参数
+        fast_model_params = {k: v.clone() for k, v in model_params_init.items()}
         for k in range(self.n_inner):
-            bx, by, bx_mark, by_mark, by_cycle = next(task_loader)
-            with torch.no_grad():
-                outputs, batch_y, _ = self.forward_step(bx, by, bx_mark, by_mark, by_cycle)
+            bx, by, bx_mark, by_mark, by_cycle = next(support_loader)
+            outputs, batch_y, _ = self.forward_step_with_params(
+                bx, by, bx_mark, by_mark, by_cycle, fast_model_params, task_model
+            )
+            loss = self.A.get_loss(outputs, batch_y)
 
-            optimizer.zero_grad()
-            loss = fast_A.get_loss(outputs, batch_y)
-            loss.backward()
+            model_grads = torch.autograd.grad(
+                loss, fast_model_params.values(), 
+                create_graph=not self.first_order, 
+                allow_unused=True
+            )
+            model_grads = clip_grads(model_grads, self.args.max_norm)
+            model_grads_dict = {k: g for k, g in zip(fast_model_params.keys(), model_grads) if g is not None}
+            fast_model_params = update_param_dict(fast_model_params, model_grads_dict, self.inner_lr)
 
-            nn.utils.clip_grad_norm_(fast_A.parameters(), max_norm=self.args.max_norm)
-            optimizer.step()
+        # 外层循环：在query set上使用标准损失评估性能
+        bx, by, bx_mark, by_mark, by_cycle = next(query_loader)
+        outputs, batch_y, _ = self.forward_step_with_params(
+            bx, by, bx_mark, by_mark, by_cycle, fast_model_params, task_model
+        )
+        meta_loss = self.A.get_loss(outputs, batch_y)
+        return meta_loss
 
-            losses.append(loss.item())
+    def forward_step_with_params(self, batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle, params, model):
+        batch_x = batch_x.float().to(self.device)
+        batch_y = batch_y.float().to(self.device)
 
-        fast_state = fast_A.state_dict()
-        return np.mean(losses), fast_state
+        if ('PEMS' in self.args.data or 'SRU' in self.args.data) and self.args.model not in ['TiDE']:
+            batch_x_mark = None
+            batch_y_mark = None
+        else:
+            batch_x_mark = batch_x_mark.float().to(self.device)
+            batch_y_mark = batch_y_mark.float().to(self.device)
 
-    def meta_update(self, task_states):
-        for i, (name, p) in enumerate(self.A.named_parameters()):
-            meta_grad = torch.zeros_like(p)
-            for task_state in task_states:
-                meta_grad += (task_state[name] - p).detach()
-            if p.grad is None:
-                p.grad = torch.zeros_like(p)
-            p.grad.data.add_(meta_grad / len(task_states))
+        # decoder input
+        dec_inp = torch.zeros_like(batch_y[:, -self.pred_len:, :]).float()
+        dec_inp = torch.cat([batch_y[:, :self.label_len, :], dec_inp], dim=1).float().to(self.device)
+
+        # encoder - decoder
+        model_args = [batch_x, batch_x_mark, dec_inp, batch_y_mark]
+        if self.args.model in MODEL_REQUIRES_CYCLE:
+            model_args.append(batch_cycle)
+        model_args = tuple(model_args)
+        if self.args.output_attention:
+            outputs, attn = functional_call(model, params, model_args)
+        else:
+            outputs, attn = functional_call(model, params, model_args), None
+
+        f_dim = -1 if self.args.features == 'MS' else 0
+        outputs = outputs[:, -self.pred_len:, f_dim:]
+        batch_y = batch_y[:, -self.pred_len:, f_dim:]
+        return outputs, batch_y, attn
 
     def initialize_meta_tasks(self, train_data):
         self.meta_learning = False
 
-        task_data_list = split_dataset_with_overlap(train_data, self.args.num_tasks, self.args.overlap_ratio)
-        task_loader_list = [DataLoader(task_data, batch_size=self.args.auxi_batch_size, shuffle=True) for task_data in task_data_list]
-        task_loader_list = [cycle(task_loader) for task_loader in task_loader_list]
-        return task_loader_list
+        task_data_list = split_dataset_with_overlap(train_data, self.num_tasks, self.args.overlap_ratio)
+        task_data_list = [split_dataset(task_data, r=0.7) for task_data in task_data_list]
 
-    def check_meta_learning(self):
-        if self.args.fixed_step and self.step > self.args.fixed_step and not self.meta_learning:
-            enable_grad(self.A)  # start training A
-            print(f"\n>>>>>>>Meta learning enabled at step {self.step}, epoch {self.epoch}\n")
-            self.meta_learning = True
+        support_data_list = [td[0] for td in task_data_list]
+        support_loader_list = [DataLoader(support_data, batch_size=self.args.auxi_batch_size, shuffle=True) for support_data in support_data_list]
+        support_loader_list = [cycle(support_loader) for support_loader in support_loader_list]
 
-    def train(self, setting, prof=None):
-        train_data, train_loader = self._get_data(flag='train')
-        task_loader_list = self.initialize_meta_tasks(train_data)
-        vali_data, vali_loader = self._get_data(flag='val')
+        query_data_list = [td[1] for td in task_data_list]
+        query_loader_list = [DataLoader(query_data, batch_size=self.args.auxi_batch_size, shuffle=True) for query_data in query_data_list]
+        query_loader_list = [cycle(query_loader) for query_loader in query_loader_list]
+        return support_loader_list, query_loader_list
 
-        path = os.path.join(self.args.checkpoints, setting)
-        os.makedirs(path, exist_ok=True)
-        res_path = os.path.join(self.args.results, setting)
-        os.makedirs(res_path, exist_ok=True)
-        self.writer = self._create_writer(res_path)
+    def meta_train(self, support_loader_list, query_loader_list, path, res_path):
+        # 在meta train阶段，损失函数参数可训练，模型参数也需要梯度（用于inner loop）
+        enable_grad(self.A)
+        enable_grad(self.model)
+
+        A_optim = self._select_optimizer(self.A, self.meta_lr, optim_type=self.args.meta_optim_type)
+        A_scheduler = Scheduler(A_optim, self.args, self.args.warmup_steps)
+
+        epoch_time = time.time()
+        meta_step = 0
+        for step in range(self.args.warmup_steps):
+            meta_step = step + 1
+            verbose = (meta_step % 100 == 0)
+            task_losses = []
+
+            meta_lr_cur = A_scheduler.get_lr()
+            self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_lr', meta_lr_cur, meta_step)
+
+            self.model.train()
+            self.A.train()
+
+            # 遍历所有任务，累积meta loss
+            for task_id, (support_loader, query_loader) in enumerate(zip(support_loader_list, query_loader_list)):
+                meta_loss = self.inner_loop(task_id, support_loader, query_loader)
+                task_losses.append(meta_loss)
+                self.writer.add_scalar(f'{self.pred_len}/meta_train/task_{task_id+1}_meta_loss', meta_loss.item(), meta_step)
+                if verbose:
+                    print(f"\ttask: {task_id + 1}, total task: {self.num_tasks} | meta loss: {meta_loss.item():.7f}")
+
+            # 统一进行损失函数参数的更新
+            A_optim.zero_grad()
+            avg_meta_loss = torch.stack(task_losses).mean()
+            avg_meta_loss.backward()
+            A_optim.step()
+
+            avg_meta_loss_val = avg_meta_loss.item()
+            self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_loss', avg_meta_loss_val, meta_step)
+            log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/cov_mat', meta_step)
+
+            if verbose:
+                print(f"Step: {meta_step} cost time: {time.time() - epoch_time:.2f}s")
+                print(f"Step: {meta_step} | Avg Meta Loss: {avg_meta_loss_val:.7f}")
+                epoch_time = time.time()
+
+            if self.args.lradj in ['TST']:
+                A_scheduler.step(verbose=verbose)
+            else:
+                if verbose:
+                    A_scheduler.step(avg_meta_loss_val, meta_step // 100)
+
+        best_A_path = os.path.join(path, 'A.pth')
+        torch.save(self.A, best_A_path)
+        projection = get_projection(self.A)
+        plot_heatmap(projection, save_path=os.path.join(res_path, 'cov_matrix.pdf'))
+        print(f'Statistics of learned covariance matrix: \033[92m(mean: {np.mean(projection):.4f}, std: {np.std(projection):.4f}, min: {np.min(projection):.4f}, max: {np.max(projection):.4f})\033[0m')
+
+    def meta_test(self, train_loader, vali_data, vali_loader, criterion, path):
+        if self.model_per_task and self.num_tasks > 1:
+            del self.task_models[1:]
+
+        disable_grad(self.A)
+        enable_grad(self.model)
 
         time_now = time.time()
         train_steps = len(train_loader)
@@ -192,20 +294,13 @@ class Exp_Long_Term_Forecast_META_Reptile(Exp_Basic):
         model_optim = self._select_optimizer(self.model, self.lr)
         scheduler = Scheduler(model_optim, self.args, train_steps)
 
-        A_optim = self._select_optimizer(self.A, self.meta_lr, optim_type=self.args.meta_optim_type)
-        A_scheduler = Scheduler(A_optim, self.args, train_steps)
-
-        criterion = self._select_criterion()
-
         for epoch in range(self.args.train_epochs):
             self.epoch = epoch + 1
             iter_count = 0
-            train_loss, train_loss_mse, meta_loss = [], [], []
+            train_loss, train_loss_mse = [], []
 
             lr_cur = scheduler.get_lr()
-            self.writer.add_scalar(f'{self.pred_len}/train/lr', lr_cur, self.epoch)
-            meta_lr_cur = A_scheduler.get_lr()
-            self.writer.add_scalar(f'{self.pred_len}/train/meta_lr', meta_lr_cur, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/meta_test/lr', lr_cur, self.epoch)
 
             epoch_time = time.time()
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(train_loader):
@@ -225,74 +320,62 @@ class Exp_Long_Term_Forecast_META_Reptile(Exp_Basic):
                     loss_mse = criterion(outputs, batch_y)
                 train_loss.append(loss.item())
                 train_loss_mse.append(loss_mse.item())
-                self.writer.add_scalar(f'{self.pred_len}/train_iter/loss_cov', loss.item(), self.step)
-                self.writer.add_scalar(f'{self.pred_len}/train_iter/loss_mse', loss_mse.item(), self.step)
-
-                self.check_meta_learning()
-                if self.meta_learning:
-                    self.model.eval()
-                    self.A.train()
-
-                    A_optim.zero_grad()
-                    task_losses, task_states = [], []
-                    for k, task_loader in enumerate(task_loader_list):
-                        task_loss, task_state = self.inner_loop(k, task_loader)
-                        task_losses.append(task_loss)
-                        task_states.append(task_state)
-                    self.meta_update(task_states)
-                    A_optim.step()
-
-                    meta_l = np.mean(task_losses)
-                else:
-                    meta_l = 1e4
-
-                meta_loss.append(meta_l)
-                self.writer.add_scalar(f'{self.pred_len}/train_iter/loss_meta', meta_l, self.step)
+                self.writer.add_scalar(f'{self.pred_len}/meta_test_iter/loss', loss.item(), self.step)
+                self.writer.add_scalar(f'{self.pred_len}/meta_test_iter/loss_mse', loss_mse.item(), self.step)
 
                 if (i + 1) % 100 == 0:
-                    print("\titers: {}, epoch: {} | loss: {:.7f}, meta loss: {:.7f}".format(i + 1, self.epoch, loss.item(), meta_l))
+                    print(f"\tMeta Test - iters: {i + 1}, epoch: {self.epoch} | loss: {loss.item():.7f}, mse loss: {loss_mse.item():.7f}")
                     cost_time = time.time() - time_now
                     speed = cost_time / iter_count
-                    left_time = speed * ((self.args.train_epochs - epoch) * train_steps - i)
-                    print('\tspeed: {:.4f}s/iter; cost time: {:.4f}s; left time: {:.4f}s'.format(speed, cost_time, left_time))
+                    left_time = speed * ((self.args.train_epochs - epoch) * len(train_loader) - i)
+                    print(f'\tspeed: {speed:.4f}s/iter; cost time: {cost_time:.4f}s; left time: {left_time:.4f}s')
                     iter_count = 0
                     time_now = time.time()
 
                 if self.args.lradj in ['TST']:
                     scheduler.step(verbose=(i + 1 == train_steps))
-                    if self.meta_learning:
-                        A_scheduler.step(verbose=(i + 1 == train_steps))
 
             print("Epoch: {} cost time: {}".format(self.epoch, time.time() - epoch_time))
             train_loss = np.average(train_loss)
             train_loss_mse = np.average(train_loss_mse)
-            meta_loss = np.average(meta_loss)
             valid_loss_mse, valid_loss_cov = self.vali(vali_data, vali_loader, criterion)
 
-            self.writer.add_scalar(f'{self.pred_len}/train/loss_cov', train_loss, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/train/loss_mse', train_loss_mse, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/train/loss_meta', meta_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/meta_test/loss_cov', train_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/meta_test/loss_mse', train_loss_mse, self.epoch)
             self.writer.add_scalar(f'{self.pred_len}/vali/loss_cov', valid_loss_cov, self.epoch)
             self.writer.add_scalar(f'{self.pred_len}/vali/loss_mse', valid_loss_mse, self.epoch)
-            log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/cov_mat', self.epoch)
 
-            print(
-                "Epoch: {}, Steps: {} | Train Loss Cov: {:.7f}, MSE: {:.7f}, Meta: {:.7f} | Vali Loss Cov: {:.7f}, MSE: {:.7f}".format(
-                    self.epoch, self.step, train_loss, train_loss_mse, meta_loss, valid_loss_cov, valid_loss_mse
-                )
-            )
-            other_to_save = {'A': self.A}
-            improved = early_stopping(valid_loss_mse, self.model, path, **other_to_save)
-            self.args.learned_from_method = True if improved and self.meta_learning else False
-
+            print(f"Epoch: {self.epoch} | Train Loss Cov: {train_loss:.7f}, MSE: {train_loss_mse:.7f} | Valid Loss Cov: {valid_loss_cov:.7f}, MSE: {valid_loss_mse:.7f}")
+            early_stopping(valid_loss_mse, self.model, path)
             if early_stopping.early_stop:
-                print("Early stopping")
+                print("Meta Test Early stopping")
                 break
 
             if self.args.lradj not in ['TST']:
                 scheduler.step(valid_loss_mse, self.epoch)
-                if self.meta_learning:
-                    A_scheduler.step(valid_loss_mse, self.epoch)
+
+    def train(self, setting, prof=None):
+        train_data, train_loader = self._get_data(flag='train')
+        support_loader_list, query_loader_list = self.initialize_meta_tasks(train_data)
+        vali_data, vali_loader = self._get_data(flag='val')
+
+        path = os.path.join(self.args.checkpoints, setting)
+        os.makedirs(path, exist_ok=True)
+        res_path = os.path.join(self.args.results, setting)
+        os.makedirs(res_path, exist_ok=True)
+        self.writer = self._create_writer(res_path)
+
+        criterion = self._select_criterion()
+
+        # ============ Meta Train 阶段：只训练损失函数 ============
+        print("\n>>>>>>>Meta Training Phase\n")
+        self.meta_train(support_loader_list, query_loader_list, path, res_path)
+        print("\n>>>>>>>Meta Training Phase completed\n")
+
+        # ============ ML3 Meta Test 阶段：重新初始化模型，使用学习到的损失函数训练 ============
+        print("\n>>>>>>>Meta Test Phase\n")
+        self.meta_test(train_loader, vali_data, vali_loader, criterion, path)
+        print("\n>>>>>>>Meta Test Phase completed\n")
 
         best_model_path = os.path.join(path, 'checkpoint.pth')
         self.model.load_state_dict(torch.load(best_model_path))
@@ -386,7 +469,7 @@ class Exp_Long_Term_Forecast_META_Reptile(Exp_Basic):
         f.write('\n\n')
         f.close()
 
-        np.save(os.path.join(res_path, 'metrics.npy'), np.array([mae, mse, rmse, mape, mspe, mre]))
+        np.save(os.path.join(res_path, 'metrics.npy'), np.array([mae, mse, cov_loss, rmse, mape, mspe, mre]))
 
         if self.output_pred:
             np.save(os.path.join(res_path, 'input.npy'), inputs.cpu().numpy())
