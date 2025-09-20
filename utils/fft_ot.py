@@ -9,7 +9,7 @@ from ot.backend import get_backend
 from ot.utils import dots, list_to_array
 
 
-def cal_wasserstein(X1, X2, distance, ot_type='sinkhorn', normalize=1, mask_factor=0.01, numItermax=10000, stopThr=1e-4, reg_sk=0.1, reg_m=10, var_weight=1.0, eps=1e-8):
+def cal_wasserstein(X1, X2, distance, ot_type='sinkhorn', normalize=1, mask_factor=0.01, numItermax=10000, stopThr=1e-4, reg_sk=0.1, reg_m=10, var_weight=1.0, mean_weight=1.0, eps=1e-8):
     """
     X1: prediction sequence with shape [B, T, D]
     X2: label sequence with shape [B, T, D]
@@ -157,7 +157,7 @@ def cal_wasserstein(X1, X2, distance, ot_type='sinkhorn', normalize=1, mask_fact
             for d in range(D):
                 X1_d = X1[..., d]
                 X2_d = X2[..., d]
-                loss += empirical_bures_wasserstein_distance(X1_d, X2_d, reg=reg_sk, ws=a, wt=b, var_weight=var_weight, eps=eps)
+                loss += empirical_bures_wasserstein_distance(X1_d, X2_d, reg=reg_sk, ws=a, wt=b, var_weight=var_weight, mean_weight=mean_weight, eps=eps)
             loss = loss / D
             loss = loss.mean()
         elif ot_type == 'upper_bound':
@@ -166,7 +166,7 @@ def cal_wasserstein(X1, X2, distance, ot_type='sinkhorn', normalize=1, mask_fact
             a = a.unsqueeze(0).expand(D, -1, -1)  # (D, B, 1)
             b = b.unsqueeze(0).expand(D, -1, -1)  # (D, B, 1)
 
-            loss = batch_empirical_bures_wasserstein_distance(X1, X2, reg=reg_sk, ws=a, wt=b, var_weight=var_weight, eps=eps)
+            loss = batch_empirical_bures_wasserstein_distance(X1, X2, reg=reg_sk, ws=a, wt=b, var_weight=var_weight, mean_weight=mean_weight, eps=eps)
         return loss
 
     if normalize == 1:
@@ -192,7 +192,7 @@ def cal_wasserstein(X1, X2, distance, ot_type='sinkhorn', normalize=1, mask_fact
 
 
 def batch_empirical_bures_wasserstein_distance(
-    xs, xt, reg=1e-6, ws=None, wt=None, bias=True, var_weight=1.0, eps=1e-9
+    xs, xt, reg=1e-6, ws=None, wt=None, bias=True, var_weight=1.0, mean_weight=1.0, eps=1e-9
 ):
     """
     批量计算 Bures-Wasserstein 距离，支持所有维度同时计算
@@ -219,11 +219,11 @@ def batch_empirical_bures_wasserstein_distance(
     Ct += reg * torch.eye(T, dtype=xt.dtype, device=xt.device).unsqueeze(0)
 
     # 批量距离计算
-    W_batch = batch_upper_bound_distance(mxs, mxt, Cs, Ct, var_weight=var_weight, eps=eps)
+    W_batch = batch_upper_bound_distance(mxs, mxt, Cs, Ct, var_weight=var_weight, mean_weight=mean_weight, eps=eps)
     return torch.mean(W_batch)  # 对所有维度求均值
 
 
-def batch_upper_bound_distance(ms, mt, Cs, Ct, var_weight=1.0, eps=1e-6):
+def batch_upper_bound_distance(ms, mt, Cs, Ct, var_weight=1.0, mean_weight=1.0, eps=1e-6):
     """
     批量计算 Bures-Wasserstein 距离的上界
     输入形状: ms, mt: (D, 1, T)
@@ -239,13 +239,13 @@ def batch_upper_bound_distance(ms, mt, Cs, Ct, var_weight=1.0, eps=1e-6):
     trace_CsCt = torch.diagonal(torch.matmul(Cs, Ct), dim1=-2, dim2=-1).sum(dim=-1)
 
     B = trace_Cs + trace_Ct - 2 * torch.sqrt(torch.clip(trace_CsCt, min=eps))
-    W = torch.sqrt(torch.clip(norm_diff_sq + var_weight * B, min=eps))
+    W = torch.sqrt(torch.clip(mean_weight * norm_diff_sq + var_weight * B, min=eps))
 
     return W
 
 
 def empirical_bures_wasserstein_distance(
-    xs, xt, reg=1e-6, ws=None, wt=None, bias=True, var_weight=1.0, eps=1e-9
+    xs, xt, reg=1e-6, ws=None, wt=None, bias=True, var_weight=1.0, mean_weight=1.0, eps=1e-9
 ):
     r"""copy from pot library"""
     xs, xt = list_to_array(xs, xt)
@@ -272,29 +272,29 @@ def empirical_bures_wasserstein_distance(
     Cs = nx.dot((xs * ws).T, xs) / nx.sum(ws) + reg * nx.eye(d, type_as=xs)
     Ct = nx.dot((xt * wt).T, xt) / nx.sum(wt) + reg * nx.eye(d, type_as=xt)
 
-    W = bures_wasserstein_distance(mxs, mxt, Cs, Ct, eps=eps, var_weight=var_weight)
+    W = bures_wasserstein_distance(mxs, mxt, Cs, Ct, eps=eps, var_weight=var_weight, mean_weight=mean_weight)
     return W
 
 
-def cal_distance(ms, mt, Cs, Ct, nx, sqrtm_func, eps=1e-6, var_weight=1.0):
+def cal_distance(ms, mt, Cs, Ct, nx, sqrtm_func, eps=1e-6, var_weight=1.0, mean_weight=1.0):
     Cs12 = sqrtm_func(Cs, eps=eps)
     B = nx.trace(Cs + Ct - 2 * sqrtm_func(dots(Cs12, Ct, Cs12), eps=eps))
-    W = nx.sqrt(nx.maximum(nx.norm(ms - mt) ** 2 + var_weight * B, 0))
+    W = nx.sqrt(nx.maximum(mean_weight * nx.norm(ms - mt) ** 2 + var_weight * B, 0))
     return W
 
 
-def bures_wasserstein_distance(ms, mt, Cs, Ct, eps=1e-6, var_weight=1.0):
+def bures_wasserstein_distance(ms, mt, Cs, Ct, eps=1e-6, var_weight=1.0, mean_weight=1.0):
     r"""copy from pot library"""
     ms, mt, Cs, Ct = list_to_array(ms, mt, Cs, Ct)
     nx = get_backend(ms, mt, Cs, Ct)
 
     try:
-        return cal_distance(ms, mt, Cs, Ct, nx, sqrtm_svd_stable, eps=eps, var_weight=var_weight)
+        return cal_distance(ms, mt, Cs, Ct, nx, sqrtm_svd_stable, eps=eps, var_weight=var_weight, mean_weight=mean_weight)
     except Exception:
         try:
-            return cal_distance(ms, mt, Cs, Ct, nx, sqrtm, eps=eps, var_weight=var_weight)
+            return cal_distance(ms, mt, Cs, Ct, nx, sqrtm, eps=eps, var_weight=var_weight, mean_weight=mean_weight)
         except Exception:
-            return cal_distance(ms, mt, Cs, Ct, nx, sqrtm_newton_schulz_stable, eps=eps, var_weight=var_weight)
+            return cal_distance(ms, mt, Cs, Ct, nx, sqrtm_newton_schulz_stable, eps=eps, var_weight=var_weight, mean_weight=mean_weight)
 
 
 def sqrtm(a, *args, **kwargs):

@@ -288,7 +288,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     elif self.args.auxi_mode == "fft_ot":
                         loss_auxi = cal_wasserstein(
                             outputs, batch_y, self.args.distance, ot_type=self.args.ot_type, normalize=self.args.normalize, 
-                            mask_factor=self.args.mask_factor, reg_sk=self.args.reg_sk, stopThr=self.args.stopThr, numItermax=self.args.numItermax, var_weight=self.args.var_weight
+                            mask_factor=self.args.mask_factor, reg_sk=self.args.reg_sk, stopThr=self.args.stopThr, numItermax=self.args.numItermax, var_weight=self.args.var_weight, mean_weight=self.args.mean_weight
                         )
 
                     elif self.args.auxi_mode == "fourier_koopman":

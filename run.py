@@ -201,6 +201,7 @@ if __name__ == '__main__':
     parser.add_argument('--stopThr', type=float, default=1e-4, help="stop threshold in Sinkhorn")
     parser.add_argument('--mask_factor', type=float, default=0.01, help="mask factor for mask matrix")
     parser.add_argument('--var_weight', type=float, default=1.0, help="variance weight", action=EvalAction)
+    parser.add_argument('--mean_weight', type=float, default=1.0, help="mean weight", action=EvalAction)
 
     # SimpleTM
     parser.add_argument('--l1_weight', type=float, default=5e-5, help='Weight of L1 loss')
