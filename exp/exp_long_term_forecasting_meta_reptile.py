@@ -98,7 +98,7 @@ def update_param_dict(param_dict, grads, lr):
     return {k: v - lr * grads[k] for k, v in param_dict.items()}
 
 
-class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
+class Exp_Long_Term_Forecast_META_Reptile(Exp_Basic):
     def __init__(self, args):
         super().__init__(args)
         self.pred_len = args.pred_len
@@ -113,6 +113,7 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
 
         self.A = CovarianceMatrix(self.args).to(self.device)
         self.task_models = [self.model]
+        assert self.args.model_per_task == 0
         if self.model_per_task:
             for _ in range(1, self.num_tasks):
                 task_model = self._build_model().to(self.device)
@@ -148,36 +149,44 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
         self.A.train()
         return total_loss, total_cov_loss
 
-    def inner_loop(self, task_id, support_loader, query_loader):
-        # 获取当前模型参数（每个meta epoch都从当前状态开始，而不是初始状态）
+    def inner_loop(self, task_id, support_loader):
         task_model = self.task_models[task_id]
         model_params_init = get_param_dict(task_model)
+        A_params_init = get_param_dict(self.A)
 
-        # 内层循环：使用学习到的损失函数训练模型参数
-        fast_model_params = {k: v.clone() for k, v in model_params_init.items()}
+        model_params = {k: v.clone().detach().requires_grad_(True) for k, v in model_params_init.items()}
+        A_params = {k: v.clone().detach().requires_grad_(True) for k, v in A_params_init.items()}
+        inner_loss = []
+
         for k in range(self.n_inner):
             bx, by, bx_mark, by_mark, by_cycle = next(support_loader)
             outputs, batch_y, _ = self.forward_step_with_params(
-                bx, by, bx_mark, by_mark, by_cycle, fast_model_params, task_model
+                bx, by, bx_mark, by_mark, by_cycle, model_params, task_model
             )
-            loss = self.A.get_loss(outputs, batch_y)
+            loss = self.A.get_loss(outputs, batch_y, params=A_params)
+            inner_loss.append(loss.item())
 
-            model_grads = torch.autograd.grad(
-                loss, fast_model_params.values(), 
-                create_graph=not self.first_order, 
+            grads = torch.autograd.grad(
+                loss, list(model_params.values()) + list(A_params.values()),
+                create_graph=not self.first_order,
                 allow_unused=True
             )
-            model_grads = clip_grads(model_grads, self.args.max_norm)
-            model_grads_dict = {k: g for k, g in zip(fast_model_params.keys(), model_grads) if g is not None}
-            fast_model_params = update_param_dict(fast_model_params, model_grads_dict, self.inner_lr)
 
-        # 外层循环：在query set上使用标准损失评估性能
-        bx, by, bx_mark, by_mark, by_cycle = next(query_loader)
-        outputs, batch_y, _ = self.forward_step_with_params(
-            bx, by, bx_mark, by_mark, by_cycle, fast_model_params, task_model
-        )
-        meta_loss = self.A.get_loss(outputs, batch_y)
-        return meta_loss
+            n_model = len(model_params)
+            model_grads = grads[:n_model]
+            A_grads = grads[n_model:]
+
+            model_grads = clip_grads(model_grads, self.args.max_norm)
+            A_grads = clip_grads(A_grads, self.args.max_norm)
+
+            model_grad_dict = {k: g for k, g in zip(model_params.keys(), model_grads) if g is not None}
+            A_grad_dict = {k: g for k, g in zip(A_params.keys(), A_grads) if g is not None}
+
+            model_params = update_param_dict(model_params, model_grad_dict, self.inner_lr)
+            A_params = update_param_dict(A_params, A_grad_dict, self.inner_lr)
+
+        A_delta = {k: A_params[k] - A_params_init[k] for k in A_params_init.keys()}
+        return A_delta, np.mean(inner_loss)
 
     def forward_step_with_params(self, batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle, params, model):
         batch_x = batch_x.float().to(self.device)
@@ -213,18 +222,11 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
         self.meta_learning = False
 
         task_data_list = split_dataset_with_overlap(train_data, self.num_tasks, self.args.overlap_ratio)
-        task_data_list = [split_dataset(task_data, r=0.7) for task_data in task_data_list]
-
-        support_data_list = [td[0] for td in task_data_list]
-        support_loader_list = [DataLoader(support_data, batch_size=self.args.auxi_batch_size, shuffle=True) for support_data in support_data_list]
+        support_loader_list = [DataLoader(support_data, batch_size=self.args.auxi_batch_size, shuffle=True) for support_data in task_data_list]
         support_loader_list = [cycle(support_loader) for support_loader in support_loader_list]
+        return support_loader_list
 
-        query_data_list = [td[1] for td in task_data_list]
-        query_loader_list = [DataLoader(query_data, batch_size=self.args.auxi_batch_size, shuffle=True) for query_data in query_data_list]
-        query_loader_list = [cycle(query_loader) for query_loader in query_loader_list]
-        return support_loader_list, query_loader_list
-
-    def meta_train(self, support_loader_list, query_loader_list, path, res_path):
+    def meta_train(self, support_loader_list, path, res_path):
         # 在meta train阶段，损失函数参数可训练，模型参数也需要梯度（用于inner loop）
         enable_grad(self.A)
         enable_grad(self.model)
@@ -237,6 +239,8 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
         for step in range(self.args.warmup_steps):
             meta_step = step + 1
             verbose = (meta_step % 100 == 0)
+
+            A_grads_accum = None
             task_losses = []
 
             meta_lr_cur = A_scheduler.get_lr()
@@ -246,20 +250,29 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
             self.A.train()
 
             # 遍历所有任务，累积meta loss
-            for task_id, (support_loader, query_loader) in enumerate(zip(support_loader_list, query_loader_list)):
-                meta_loss = self.inner_loop(task_id, support_loader, query_loader)
+            for task_id, support_loader in enumerate(support_loader_list):
+                A_delta, meta_loss = self.inner_loop(task_id, support_loader)
                 task_losses.append(meta_loss)
-                self.writer.add_scalar(f'{self.pred_len}/meta_train/task_{task_id+1}_meta_loss', meta_loss.item(), meta_step)
+
+                if A_grads_accum is None:
+                    A_grads_accum = {k: -v for k, v in A_delta.items()}  # Reptile 方向
+                else:
+                    for k in A_grads_accum:
+                        A_grads_accum[k] += -A_delta[k]
+
+                self.writer.add_scalar(f'{self.pred_len}/meta_train/task_{task_id+1}_meta_loss', meta_loss, meta_step)
                 if verbose:
-                    print(f"\ttask: {task_id + 1}, total task: {self.num_tasks} | meta loss: {meta_loss.item():.7f}")
+                    print(f"\ttask: {task_id + 1}, total task: {self.num_tasks} | meta loss: {meta_loss:.7f}")
 
             # 统一进行损失函数参数的更新
+            avg_A_grads = {k: v / self.num_tasks for k, v in A_grads_accum.items()}
             A_optim.zero_grad()
-            avg_meta_loss = torch.stack(task_losses).mean()
-            avg_meta_loss.backward()
+            for name, param in self.A.named_parameters():
+                if name in avg_A_grads and avg_A_grads[name] is not None:
+                    param.grad = avg_A_grads[name].to(param.device).detach()
             A_optim.step()
 
-            avg_meta_loss_val = avg_meta_loss.item()
+            avg_meta_loss_val = np.mean(task_losses)
             self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_loss', avg_meta_loss_val, meta_step)
             log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/cov_mat', meta_step)
 
@@ -356,7 +369,7 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
 
     def train(self, setting, prof=None):
         train_data, train_loader = self._get_data(flag='train')
-        support_loader_list, query_loader_list = self.initialize_meta_tasks(train_data)
+        support_loader_list = self.initialize_meta_tasks(train_data)
         vali_data, vali_loader = self._get_data(flag='val')
 
         path = os.path.join(self.args.checkpoints, setting)
@@ -369,7 +382,7 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
 
         # ============ Meta Train 阶段：只训练损失函数 ============
         print("\n>>>>>>>Meta Training Phase\n")
-        self.meta_train(support_loader_list, query_loader_list, path, res_path)
+        self.meta_train(support_loader_list, path, res_path)
         print("\n>>>>>>>Meta Training Phase completed\n")
 
         # ============ ML3 Meta Test 阶段：重新初始化模型，使用学习到的损失函数训练 ============

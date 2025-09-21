@@ -4,9 +4,50 @@ from typing import Optional, Tuple
 import matplotlib.pyplot as plt
 import ot
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import torch_dct as dct
 from ot.backend import get_backend
 from ot.utils import dots, list_to_array
+
+
+def gaussian_kernel(x, y, sigma=1.0):
+    """Compute Gaussian RBF kernel between x and y"""
+    # x: [B, D], y: [B, D]
+    diff = x[:, None, :] - y[None, :, :]  # [B, B, D]
+    dist_sq = (diff ** 2).sum(dim=-1)  # [B, B]
+    return torch.exp(-dist_sq / (2 * sigma ** 2))
+
+
+def polynomial_kernel(x, y, degree=3, gamma=1.0, coef0=1.0):
+    """Compute polynomial kernel between x and y"""
+    # x: [B, D], y: [B, D] 
+    dot_product = torch.mm(x, y.T)  # [B, B]
+    return (gamma * dot_product + coef0) ** degree
+
+
+def linear_kernel(x, y):
+    """Compute linear kernel between x and y"""
+    return torch.mm(x, y.T)
+
+
+def compute_mmd(X, Y, kernel_func, **kernel_params):
+    """Compute MMD between two sets of samples"""
+    # X: [B, D], Y: [B, D]
+    XX = kernel_func(X, X, **kernel_params).mean()
+    YY = kernel_func(Y, Y, **kernel_params).mean()  
+    XY = kernel_func(X, Y, **kernel_params).mean()
+    
+    mmd = XX - 2 * XY + YY
+    return mmd
+
+
+def multi_kernel_mmd(X, Y, sigmas=[0.1, 1.0, 10.0]):
+    """Compute MMD with multiple Gaussian kernels"""
+    mmd = 0
+    for sigma in sigmas:
+        mmd += compute_mmd(X, Y, gaussian_kernel, sigma=sigma)
+    return mmd / len(sigmas)
 
 
 def cal_wasserstein(X1, X2, distance, ot_type='sinkhorn', normalize=1, mask_factor=0.01, numItermax=10000, stopThr=1e-4, reg_sk=0.1, reg_m=10, var_weight=1.0, mean_weight=1.0, eps=1e-8):
@@ -100,7 +141,39 @@ def cal_wasserstein(X1, X2, distance, ot_type='sinkhorn', normalize=1, mask_fact
             if ot_type == 'sinkhorn':
                 pi = ot.sinkhorn(a, b, M_d, reg=reg_sk, numItermax=numItermax, stopThr=stopThr)
             elif ot_type == 'emd':
-                pi = ot.emd2(a, b, M_d, numItermax=numItermax)
+                pi = ot.emd(a, b, M_d, numItermax=numItermax)
+            elif ot_type == 'uot':
+                pi = ot.unbalanced.sinkhorn_unbalanced(a, b, M_d, reg=reg_sk, stopThr=stopThr, numItermax=numItermax, reg_m=reg_m)
+            elif ot_type == 'uot_mm':
+                pi = ot.unbalanced.mm_unbalanced(a, b, M_d, reg_m=reg_m, numItermax=numItermax, stopThr=stopThr)
+
+            loss += (pi * M_d).sum()
+
+        loss = loss / D
+        return loss
+
+    elif distance == '2norm_per_dim':
+        # Correct calculation of M
+        M = ((X1[:, None, :, :] - X2[None, :, :, :])**2).sum(-1)  # [B, B, D]
+        
+        if normalize == 1:
+            # equals to M = torch.stack([M[..., d] / M[..., d].max() for d in range(D)], dim=-1)
+            M = M / M.max(dim=1, keepdim=True)[0].max(dim=0, keepdim=True)[0]
+
+        loss = 0
+        a, b = torch.ones((B,), device=device) / B, torch.ones((B,), device=device) / B
+
+        for d in range(D):
+            M_d = M[:, :, d]
+
+            if mask_factor > 0:
+                mask = torch.ones_like(M_d) - torch.eye(B, device=device)
+                M_d = M_d + mask_factor * mask
+
+            if ot_type == 'sinkhorn':
+                pi = ot.sinkhorn(a, b, M_d, reg=reg_sk, numItermax=numItermax, stopThr=stopThr)
+            elif ot_type == 'emd':
+                pi = ot.emd(a, b, M_d, numItermax=numItermax)
             elif ot_type == 'uot':
                 pi = ot.unbalanced.sinkhorn_unbalanced(a, b, M_d, reg=reg_sk, stopThr=stopThr, numItermax=numItermax, reg_m=reg_m)
             elif ot_type == 'uot_mm':
@@ -121,6 +194,24 @@ def cal_wasserstein(X1, X2, distance, ot_type='sinkhorn', normalize=1, mask_fact
         a, b = torch.ones((B, X1.shape[1]), device=device) / B, torch.ones((B, X2.shape[1]), device=device) / B
         loss = ot.lp.wasserstein_1d(X1, X2, a, b, p=2)
         loss = loss.mean()
+        return loss
+
+    elif distance == 'emd_per_dim':
+        loss = 0
+        a, b = torch.ones((B,), device=device) / B, torch.ones((B,), device=device) / B
+
+        for d in range(D):
+            M_d = ot.dist(X1[:, :, d], X2[:, :, d], metric='sqeuclidean', p=2)
+            if normalize == 1:
+                M_d = M_d / M_d.max()
+
+            if mask_factor > 0:
+                mask = torch.ones_like(M_d) - torch.eye(B, device=device)
+                M_d = M_d + mask_factor * mask
+
+            loss += ot.emd2(a, b, M_d, numItermax=numItermax)
+
+        loss = loss / D
         return loss
 
     elif distance == 'wasserstein_1d_per_dim':
@@ -167,6 +258,70 @@ def cal_wasserstein(X1, X2, distance, ot_type='sinkhorn', normalize=1, mask_fact
             b = b.unsqueeze(0).expand(D, -1, -1)  # (D, B, 1)
 
             loss = batch_empirical_bures_wasserstein_distance(X1, X2, reg=reg_sk, ws=a, wt=b, var_weight=var_weight, mean_weight=mean_weight, eps=eps)
+        return loss
+
+    elif distance == 'mmd_linear_per_dim':
+        """Linear kernel MMD - Per dimension"""
+        loss = 0
+        for d in range(D):
+            X1_d = X1[..., d]  # [B, T]
+            X2_d = X2[..., d]  # [B, T]
+            loss += compute_mmd(X1_d, X2_d, linear_kernel)
+        loss = loss / D
+        return loss
+
+    elif distance == 'mmd_rbf_per_dim':
+        """Gaussian RBF kernel MMD - Per dimension"""
+        loss = 0
+        sigma = reg_sk
+        for d in range(D):
+            X1_d = X1[..., d]  # [B, T]
+            X2_d = X2[..., d]  # [B, T]
+            loss += compute_mmd(X1_d, X2_d, gaussian_kernel, sigma=sigma)
+        loss = loss / D
+        return loss
+
+    elif distance == 'mmd_poly_per_dim':
+        """Polynomial kernel MMD - Per dimension"""
+        loss = 0
+        degree = 3
+        for d in range(D):
+            X1_d = X1[..., d]  # [B, T]
+            X2_d = X2[..., d]  # [B, T]
+            loss += compute_mmd(X1_d, X2_d, polynomial_kernel, degree=degree)
+        loss = loss / D
+        return loss
+
+    elif distance == 'mmd_multi_per_dim':
+        """Multi-kernel MMD - Per dimension"""
+        loss = 0
+        sigmas = [0.1, 1.0, 10.0]
+        for d in range(D):
+            X1_d = X1[..., d]  # [B, T]
+            X2_d = X2[..., d]  # [B, T]
+            loss += multi_kernel_mmd(X1_d, X2_d, sigmas)
+        loss = loss / D
+        return loss
+
+    elif distance == 'kl_per_dim':
+        """KL divergence per dimension using PyTorch official KLDivLoss"""
+        kl_loss = nn.KLDivLoss(reduction="batchmean")
+        loss = 0
+        
+        for d in range(D):
+            # Get all batches for dimension d: [B, T]
+            x1_d = X1[:, :, d]  # [B, T] - predictions for dimension d
+            x2_d = X2[:, :, d]  # [B, T] - targets for dimension d
+            
+            # Convert to log probabilities and probabilities
+            log_input = F.log_softmax(x1_d, dim=1)    # [B, T] - log probabilities
+            target = F.softmax(x2_d, dim=1)           # [B, T] - probabilities
+            
+            # Compute KL divergence for this dimension
+            kl_d = kl_loss(log_input, target)
+            loss += kl_d
+        
+        loss = loss / D  # Average over dimensions
         return loss
 
     if normalize == 1:

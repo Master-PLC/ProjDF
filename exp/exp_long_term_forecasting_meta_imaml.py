@@ -137,7 +137,58 @@ def update_param_dict(param_dict, grads, lr):
     return {k: v - lr * grads[k] for k, v in param_dict.items()}
 
 
-class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
+def _list_dot(xs, ys):
+    return sum((x * y).sum() for x, y in zip(xs, ys))
+
+
+def _list_add(xs, ys, alpha=1.0):
+    return [x + alpha * y for x, y in zip(xs, ys)]
+
+
+def _list_sub(xs, ys):
+    return [x - y for x, y in zip(xs, ys)]
+
+
+def _list_mul(xs, scalar):
+    return [x * scalar for x in xs]
+
+
+def _zeros_like_list(xs):
+    return [torch.zeros_like(x) for x in xs]
+
+
+def _replace_none_grads(params, grads):
+    out = []
+    for p, g in zip(params, grads):
+        if g is None:
+            out.append(torch.zeros_like(p))
+        else:
+            out.append(g)
+    return out
+
+
+def conjugate_gradient(hvp_fn, b_list, iters=10, tol=1e-10):
+    x = _zeros_like_list(b_list)
+    r = [b.clone() for b in b_list]
+    p = [ri.clone() for ri in r]
+    rdotr = _list_dot(r, r)
+
+    for _ in range(iters):
+        Ap = hvp_fn(p)  # list
+        denom = _list_dot(p, Ap) + 1e-12
+        alpha = rdotr / denom
+        x = [xi + alpha * pi for xi, pi in zip(x, p)]
+        r = [ri - alpha * Api for ri, Api in zip(r, Ap)]
+        new_rdotr = _list_dot(r, r)
+        if torch.sqrt(new_rdotr) < tol:
+            break
+        beta = new_rdotr / (rdotr + 1e-12)
+        p = [ri + beta * pi for ri, pi in zip(r, p)]
+        rdotr = new_rdotr
+    return x
+
+
+class Exp_Long_Term_Forecast_META_iMAML(Exp_Basic):
     def __init__(self, args):
         super().__init__(args)
         self.pred_len = args.pred_len
@@ -149,6 +200,12 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
         self.first_order = args.first_order
         self.model_per_task = args.model_per_task
         self.num_tasks = args.num_tasks
+
+        # iMAML 专用超参（若 args 未配置则使用默认值）
+        self.implicit_lambda = getattr(args, 'implicit_lambda', 1e-3)  # proximal 系数 λ
+        self.cg_iters = getattr(args, 'cg_iters', 10)
+        self.cg_tol = getattr(args, 'cg_tol', 1e-10)
+        self.cg_damping = getattr(args, 'cg_damping', 0.0)  # 额外 damping，可设为 0
 
         self.A = CovarianceMatrix(self.args).to(self.device)
         self.task_models = [self.model]
@@ -187,36 +244,124 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
         self.A.train()
         return total_loss, total_cov_loss
 
-    def inner_loop(self, task_id, support_loader, query_loader):
-        # 获取当前模型参数（每个meta epoch都从当前状态开始，而不是初始状态）
-        task_model = self.task_models[task_id]
-        model_params_init = get_param_dict(task_model)
-
-        # 内层循环：使用学习到的损失函数训练模型参数
-        fast_model_params = {k: v.clone() for k, v in model_params_init.items()}
+    def _inner_adapt_with_prox(self, task_model, fast_params, init_params, support_batch):
+        """
+        在支持集上做 K 步近端 SGD：min_θ L_support(θ, A) + (λ/2)||θ - θ0||^2
+        fast_params/init_params: dict[name: tensor]，其 tensor 均 requires_grad=True
+        """
+        bx, by, bx_mark, by_mark, by_cycle = support_batch
         for k in range(self.n_inner):
-            bx, by, bx_mark, by_mark, by_cycle = next(support_loader)
             outputs, batch_y, _ = self.forward_step_with_params(
-                bx, by, bx_mark, by_mark, by_cycle, fast_model_params, task_model
+                bx, by, bx_mark, by_mark, by_cycle, fast_params, task_model
             )
-            loss = self.A.get_loss(outputs, batch_y)
+            loss_support = self.A.get_loss(outputs, batch_y)
+            prox = 0.0
+            for name in fast_params.keys():
+                prox = prox + 0.5 * self.implicit_lambda * torch.sum((fast_params[name] - init_params[name]) ** 2)
+            f_obj = loss_support + prox
 
-            model_grads = torch.autograd.grad(
-                loss, fast_model_params.values(), 
-                create_graph=not self.first_order, 
-                allow_unused=True
+            grads = torch.autograd.grad(
+                f_obj, list(fast_params.values()),
+                create_graph=False, retain_graph=False, allow_unused=True
             )
-            model_grads = clip_grads(model_grads, self.args.max_norm)
-            model_grads_dict = {k: g for k, g in zip(fast_model_params.keys(), model_grads) if g is not None}
-            fast_model_params = update_param_dict(fast_model_params, model_grads_dict, self.inner_lr)
+            grads = _replace_none_grads(list(fast_params.values()), grads)
+            # SGD update
+            for (name, param), g in zip(fast_params.items(), grads):
+                fast_params[name] = param - self.inner_lr * g
+        return fast_params
 
-        # 外层循环：在query set上使用标准损失评估性能
-        bx, by, bx_mark, by_mark, by_cycle = next(query_loader)
-        outputs, batch_y, _ = self.forward_step_with_params(
-            bx, by, bx_mark, by_mark, by_cycle, fast_model_params, task_model
+    def _hvp_fn(self, task_model, theta_params, init_params, support_batch):
+        """
+        返回一个闭包 hvp(v_list) 计算 H v，其中
+        H = ∇^2_θ [ L_support(θ, A) + (λ/2)||θ - θ0||^2 ] 于当前 θ
+        """
+        bx, by, bx_mark, by_mark, by_cycle = support_batch
+
+        def hvp(v_list):
+            # 重新计算 f(θ, A) 在当前 fast θ 上的梯度
+            outputs, batch_y, _ = self.forward_step_with_params(
+                bx, by, bx_mark, by_mark, by_cycle, theta_params, task_model
+            )
+            loss_support = self.A.get_loss(outputs, batch_y)
+            prox = 0.0
+            for name in theta_params.keys():
+                prox = prox + 0.5 * self.implicit_lambda * torch.sum((theta_params[name] - init_params[name]) ** 2)
+            f_obj = loss_support + prox
+
+            g_theta = torch.autograd.grad(
+                f_obj, list(theta_params.values()),
+                create_graph=True, retain_graph=True, allow_unused=True
+            )
+            g_theta = _replace_none_grads(list(theta_params.values()), g_theta)
+            dot = _list_dot(g_theta, v_list)
+            hv = torch.autograd.grad(
+                dot, list(theta_params.values()),
+                retain_graph=True, allow_unused=True
+            )
+            hv = _replace_none_grads(list(theta_params.values()), hv)
+
+            if self.cg_damping != 0.0:
+                hv = [hvi + self.cg_damping * vi for hvi, vi in zip(hv, v_list)]
+            return hv
+
+        return hvp
+
+    def _implicit_meta_grad_A(self, task_model, init_params, theta_params, support_batch, query_batch):
+        """
+        使用 iMAML 公式得到对 A 的梯度：
+        ∇_A L_val(θ*, A) - ∂/∂A [ ∇_θ f(θ*, A) ⋅ s ]，其中 s = H^{-1} ∇_θ L_val
+        """
+        # 1) 验证集损失与 ∇_θ L_val
+        bx_q, by_q, bxm_q, bym_q, cyc_q = query_batch
+        outputs_q, batch_y_q, _ = self.forward_step_with_params(
+            bx_q, by_q, bxm_q, bym_q, cyc_q, theta_params, task_model
         )
-        meta_loss = self.A.get_loss(outputs, batch_y)
-        return meta_loss
+        L_val = self.A.get_loss(outputs_q, batch_y_q)
+
+        theta_list = list(theta_params.values())
+        g_val_theta = torch.autograd.grad(
+            L_val, theta_list, retain_graph=True, allow_unused=True
+        )
+        g_val_theta = _replace_none_grads(theta_list, g_val_theta)
+
+        # 2) 用 CG 求解 s：H s = g_val_theta
+        hvp = self._hvp_fn(task_model, theta_params, init_params, support_batch)
+        s_list = conjugate_gradient(hvp, g_val_theta, iters=self.cg_iters, tol=self.cg_tol)
+        s_list_detached = [s.detach() for s in s_list]  # stop-gradient
+
+        # 3) 第一项：∇_A L_val
+        A_params = list(self.A.parameters())
+        g_val_A = torch.autograd.grad(
+            L_val, A_params, retain_graph=True, allow_unused=True
+        )
+        g_val_A = [torch.zeros_like(p) if g is None else g for p, g in zip(A_params, g_val_A)]
+
+        # 4) 第二项：∂/∂A [ ∇_θ f(θ*, A) ⋅ s ]
+        bx_s, by_s, bxm_s, bym_s, cyc_s = support_batch
+        outputs_s, batch_y_s, _ = self.forward_step_with_params(
+            bx_s, by_s, bxm_s, bym_s, cyc_s, theta_params, task_model
+        )
+        L_sup = self.A.get_loss(outputs_s, batch_y_s)
+        prox = 0.0
+        for name in theta_params.keys():
+            prox = prox + 0.5 * self.implicit_lambda * torch.sum((theta_params[name] - init_params[name]) ** 2)
+        f_obj = L_sup + prox
+
+        g_sup_theta = torch.autograd.grad(
+            f_obj, theta_list, create_graph=True, retain_graph=True, allow_unused=True
+        )
+        g_sup_theta = _replace_none_grads(theta_list, g_sup_theta)
+        dot_cross = _list_dot(g_sup_theta, s_list_detached)
+
+        g_cross_A = torch.autograd.grad(
+            dot_cross, A_params, retain_graph=False, allow_unused=True
+        )
+        g_cross_A = [torch.zeros_like(p) if g is None else g for p, g in zip(A_params, g_cross_A)]
+
+        # meta grad wrt A
+        grad_A = [gv - gc for gv, gc in zip(g_val_A, g_cross_A)]
+        L_val_item = L_val.item()
+        return grad_A, L_val_item
 
     def forward_step_with_params(self, batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle, params, model):
         batch_x = batch_x.float().to(self.device)
@@ -276,7 +421,7 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
         for step in range(self.args.warmup_steps):
             meta_step = step + 1
             verbose = (meta_step % 100 == 0)
-            task_losses = []
+            task_val_losses = []
 
             meta_lr_cur = A_scheduler.get_lr()
             self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_lr', meta_lr_cur, meta_step)
@@ -284,27 +429,52 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
             self.model.train()
             self.A.train()
 
+            # 准备累积 A 的梯度
+            A_optim.zero_grad()
+            A_params = list(self.A.parameters())
+            accum_grads_A = [torch.zeros_like(p) for p in A_params]
+
             # 遍历所有任务，累积meta loss
             for task_id, (support_loader, query_loader) in enumerate(zip(support_loader_list, query_loader_list)):
-                meta_loss = self.inner_loop(task_id, support_loader, query_loader)
-                task_losses.append(meta_loss)
-                self.writer.add_scalar(f'{self.pred_len}/meta_train/task_{task_id+1}_meta_loss', meta_loss.item(), meta_step)
+                task_model = self.task_models[task_id]
+
+                # 初始化 fast params 与 init params（均为叶子张量，允许求导）
+                init_params = {k: v.clone().detach().requires_grad_(True) for k, v in get_param_dict(task_model).items()}
+                fast_params = {k: v.clone().detach().requires_grad_(True) for k, v in init_params.items()}
+
+                # 采样一个支持集 batch 做 inner loop
+                sup_batch = next(support_loader)
+                fast_params = self._inner_adapt_with_prox(task_model, fast_params, init_params, sup_batch)
+
+                # 采样一个查询集 batch
+                qry_batch = next(query_loader)
+
+                # iMAML 隐式梯度，返回对 A 的梯度和 L_val
+                grad_A_task, L_val_item = self._implicit_meta_grad_A(
+                    task_model, init_params, fast_params, sup_batch, qry_batch
+                )
+                accum_grads_A = [ag + g for ag, g in zip(accum_grads_A, grad_A_task)]
+                task_val_losses.append(L_val_item)
+
+                self.writer.add_scalar(f'{self.pred_len}/meta_train/task_{task_id+1}_meta_loss', L_val_item, meta_step)
                 if verbose:
-                    print(f"\ttask: {task_id + 1}, total task: {self.num_tasks} | meta loss: {meta_loss.item():.7f}")
+                    print(f"\ttask: {task_id + 1}, total task: {self.num_tasks} | meta loss: {L_val_item:.7f}")
 
             # 统一进行损失函数参数的更新
-            A_optim.zero_grad()
-            avg_meta_loss = torch.stack(task_losses).mean()
-            avg_meta_loss.backward()
+            for p, g in zip(A_params, accum_grads_A):
+                if p.grad is not None:
+                    p.grad.zero_()
+                p.grad = (g / max(1, self.num_tasks))
+
             A_optim.step()
 
-            avg_meta_loss_val = avg_meta_loss.item()
-            self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_loss', avg_meta_loss_val, meta_step)
+            avg_val_loss = float(np.mean(task_val_losses))
+            self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_loss', avg_val_loss, meta_step)
             log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/cov_mat', meta_step)
 
             if verbose:
                 print(f"Step: {meta_step} cost time: {time.time() - epoch_time:.2f}s")
-                print(f"Step: {meta_step} | Avg Meta Loss: {avg_meta_loss_val:.7f}")
+                print(f"Step: {meta_step} | Avg Meta Loss: {avg_val_loss:.7f}")
                 epoch_time = time.time()
 
             if self.args.lradj in ['TST']:

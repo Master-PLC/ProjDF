@@ -137,7 +137,7 @@ def update_param_dict(param_dict, grads, lr):
     return {k: v - lr * grads[k] for k, v in param_dict.items()}
 
 
-class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
+class Exp_Long_Term_Forecast_META_MAMLPP(Exp_Basic):
     def __init__(self, args):
         super().__init__(args)
         self.pred_len = args.pred_len
@@ -149,6 +149,7 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
         self.first_order = args.first_order
         self.model_per_task = args.model_per_task
         self.num_tasks = args.num_tasks
+        self.meta_step = 0
 
         self.A = CovarianceMatrix(self.args).to(self.device)
         self.task_models = [self.model]
@@ -187,35 +188,63 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
         self.A.train()
         return total_loss, total_cov_loss
 
-    def inner_loop(self, task_id, support_loader, query_loader):
-        # 获取当前模型参数（每个meta epoch都从当前状态开始，而不是初始状态）
+    def get_per_step_loss_importance_vector(self, num_steps):
+        loss_weights = torch.ones(num_steps, device=self.device) * (1.0 / num_steps)
+        decay_rate = 1.0 / num_steps / self.args.warmup_steps
+        min_value_for_non_final_losses = 0.03 / num_steps
+
+        for i in range(num_steps - 1):
+            curr_value = torch.maximum(
+                loss_weights[i] - (self.meta_step * decay_rate), 
+                torch.tensor(min_value_for_non_final_losses, device=self.device)
+            )
+            loss_weights[i] = curr_value
+
+        curr_value = torch.minimum(
+            loss_weights[-1] + (self.meta_step * (num_steps - 1) * decay_rate),
+            torch.tensor(1.0 - ((num_steps - 1) * min_value_for_non_final_losses), device=self.device)
+        )
+        loss_weights[-1] = curr_value
+        loss_weights = loss_weights / loss_weights.sum()
+        return loss_weights
+
+    def inner_loop(self, task_id, support_loader, query_loader, n_inner):
         task_model = self.task_models[task_id]
         model_params_init = get_param_dict(task_model)
 
-        # 内层循环：使用学习到的损失函数训练模型参数
         fast_model_params = {k: v.clone() for k, v in model_params_init.items()}
-        for k in range(self.n_inner):
+        all_query_losses = []
+
+        step_weights = self.get_per_step_loss_importance_vector(n_inner)
+        for k in range(n_inner):
             bx, by, bx_mark, by_mark, by_cycle = next(support_loader)
             outputs, batch_y, _ = self.forward_step_with_params(
                 bx, by, bx_mark, by_mark, by_cycle, fast_model_params, task_model
             )
-            loss = self.A.get_loss(outputs, batch_y)
+            inner_loss = self.A.get_loss(outputs, batch_y)
 
             model_grads = torch.autograd.grad(
-                loss, fast_model_params.values(), 
-                create_graph=not self.first_order, 
+                inner_loss, fast_model_params.values(), 
+                create_graph=not self.first_order,
                 allow_unused=True
             )
             model_grads = clip_grads(model_grads, self.args.max_norm)
             model_grads_dict = {k: g for k, g in zip(fast_model_params.keys(), model_grads) if g is not None}
             fast_model_params = update_param_dict(fast_model_params, model_grads_dict, self.inner_lr)
 
-        # 外层循环：在query set上使用标准损失评估性能
-        bx, by, bx_mark, by_mark, by_cycle = next(query_loader)
-        outputs, batch_y, _ = self.forward_step_with_params(
-            bx, by, bx_mark, by_mark, by_cycle, fast_model_params, task_model
-        )
-        meta_loss = self.A.get_loss(outputs, batch_y)
+            bx, by, bx_mark, by_mark, by_cycle = next(query_loader)
+            outputs, batch_y, _ = self.forward_step_with_params(
+                bx, by, bx_mark, by_mark, by_cycle, fast_model_params, task_model
+            )
+            query_loss = self.A.get_loss(outputs, batch_y)
+            all_query_losses.append(query_loss)
+
+            if k < n_inner - 1:
+                del inner_loss, query_loss, outputs, batch_y
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        meta_loss = torch.sum(torch.stack(all_query_losses) * step_weights)
         return meta_loss
 
     def forward_step_with_params(self, batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle, params, model):
@@ -272,23 +301,31 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
         A_scheduler = Scheduler(A_optim, self.args, self.args.warmup_steps)
 
         epoch_time = time.time()
-        meta_step = 0
+        current_inner_steps = 1
         for step in range(self.args.warmup_steps):
-            meta_step = step + 1
-            verbose = (meta_step % 100 == 0)
+            self.meta_step = step + 1
+            verbose = (self.meta_step % 100 == 0)
             task_losses = []
 
             meta_lr_cur = A_scheduler.get_lr()
-            self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_lr', meta_lr_cur, meta_step)
+            self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_lr', meta_lr_cur, self.meta_step)
 
             self.model.train()
             self.A.train()
 
+            # 动态调整内环步数
+            if self.meta_step % self.args.meta_inner_step_update_every == 0:
+                current_inner_steps = min(current_inner_steps + 1, self.n_inner)
+
+            # 任务采样
+            task_indices = torch.randperm(self.num_tasks)[:self.args.num_tasks_per_step]
             # 遍历所有任务，累积meta loss
-            for task_id, (support_loader, query_loader) in enumerate(zip(support_loader_list, query_loader_list)):
-                meta_loss = self.inner_loop(task_id, support_loader, query_loader)
+            for task_id in task_indices:
+                support_loader = support_loader_list[task_id]
+                query_loader = query_loader_list[task_id]
+                meta_loss = self.inner_loop(task_id, support_loader, query_loader, n_inner=current_inner_steps)
                 task_losses.append(meta_loss)
-                self.writer.add_scalar(f'{self.pred_len}/meta_train/task_{task_id+1}_meta_loss', meta_loss.item(), meta_step)
+                self.writer.add_scalar(f'{self.pred_len}/meta_train/task_{task_id+1}_meta_loss', meta_loss.item(), self.meta_step)
                 if verbose:
                     print(f"\ttask: {task_id + 1}, total task: {self.num_tasks} | meta loss: {meta_loss.item():.7f}")
 
@@ -299,19 +336,19 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
             A_optim.step()
 
             avg_meta_loss_val = avg_meta_loss.item()
-            self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_loss', avg_meta_loss_val, meta_step)
-            log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/cov_mat', meta_step)
+            self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_loss', avg_meta_loss_val, self.meta_step)
+            log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/cov_mat', self.meta_step)
 
             if verbose:
-                print(f"Step: {meta_step} cost time: {time.time() - epoch_time:.2f}s")
-                print(f"Step: {meta_step} | Avg Meta Loss: {avg_meta_loss_val:.7f}")
+                print(f"Step: {self.meta_step} cost time: {time.time() - epoch_time:.2f}s")
+                print(f"Step: {self.meta_step} | Avg Meta Loss: {avg_meta_loss_val:.7f}")
                 epoch_time = time.time()
 
             if self.args.lradj in ['TST']:
                 A_scheduler.step(verbose=verbose)
             else:
                 if verbose:
-                    A_scheduler.step(avg_meta_loss_val, meta_step // 100)
+                    A_scheduler.step(avg_meta_loss_val, self.meta_step // 100)
 
         best_A_path = os.path.join(path, 'A.pth')
         torch.save(self.A, best_A_path)
