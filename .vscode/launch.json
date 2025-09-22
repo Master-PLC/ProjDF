@@ -136,7 +136,7 @@
                 "--root_path", "${workspaceRoot}/dataset/ETT-small",
                 "--data_path", "ETTh1.csv",
                 "--model_id", "ETTh1_96_96",
-                "--model", "PDF",
+                "--model", "TQNet",
                 "--data_id", "ETTh1",
                 "--data", "ETTh1",
                 "--seq_len", "96",
@@ -150,7 +150,7 @@
                 "--des", "Debug",
                 "--learning_rate", "0.001",
                 "--inner_lr", "0.1",
-                "--meta_lr", "0.0005",
+                "--meta_lr", "0.05",
                 "--lradj", "type1",
                 "--train_epochs", "30",
                 "--patience", "5",
@@ -182,6 +182,7 @@
                 "--patch_len_list", "[1,1,2,2]",
                 "--stride_list", "[1,1,2,2]",
                 "--kernel_list", "[3,7,9]",
+                "--meta_type", "off_diag"
             ],
         },
 
