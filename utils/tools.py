@@ -365,8 +365,11 @@ def split_dataset(dataset, r):
 
 
 def clip_grads(grads, max_norm):
-    total_norm = torch.norm(torch.stack([g.norm() for g in grads]))
+    valid_grads = [g for g in grads if g is not None]
+    if len(valid_grads) == 0:
+        return grads
+    total_norm = torch.norm(torch.stack([g.norm() for g in valid_grads]))
     if total_norm > max_norm:
         scale = max_norm / (total_norm + 1e-6)
-        grads = [g * scale for g in grads]
+        return [g * scale if g is not None else None for g in grads]
     return grads

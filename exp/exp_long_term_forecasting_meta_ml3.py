@@ -132,9 +132,19 @@ def get_param_dict(module):
     return dict(module.named_parameters())
 
 
-def update_param_dict(param_dict, grads, lr):
-    # param_dict: dict key->tensor, grads: dict key->grad
-    return {k: v - lr * grads[k] for k, v in param_dict.items()}
+def update_param_dict(param_dict, grads_dict, lr):
+    """
+    使用梯度字典更新参数字典。
+    grads_dict 仅包含有梯度的参数，其他参数视为 grad=0（保持不变）。
+    """
+    updated_params = {}
+    for k, v in param_dict.items():
+        if k in grads_dict and grads_dict[k] is not None:
+            updated_params[k] = v - lr * grads_dict[k]
+        else:
+            # 该参数无梯度 → 视为梯度为 0 → 不更新
+            updated_params[k] = v  # 保持原参数，等价于 +0
+    return updated_params
 
 
 class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
@@ -207,7 +217,7 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
                 allow_unused=True
             )
             model_grads = clip_grads(model_grads, self.args.max_norm)
-            model_grads_dict = {k: g for k, g in zip(fast_model_params.keys(), model_grads) if g is not None}
+            model_grads_dict = {k: g for k, g in zip(fast_model_params.keys(), model_grads)}
             fast_model_params = update_param_dict(fast_model_params, model_grads_dict, self.inner_lr)
 
         # 外层循环：在query set上使用标准损失评估性能
