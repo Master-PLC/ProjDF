@@ -204,3 +204,5 @@ scripts/*
 
 dataset/*
 !dataset/ETT-small/
+
+/figure*
