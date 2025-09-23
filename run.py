@@ -133,6 +133,7 @@ if __name__ == '__main__':
     parser.add_argument('--module_first', type=int, default=1, help='calculate module first then mean ')
     parser.add_argument('--leg_degree', type=int, default=2, help='degree of legendre polynomial')
     parser.add_argument('--alpha', type=float, default=0.5, help="weight for dilate loss")
+    parser.add_argument('--dilate_alpha', type=float, default=0.5, help="weight for dilate loss")
     parser.add_argument('--gamma', type=float, default=0.01, help="coef for dilate loss")
 
     # PCA
