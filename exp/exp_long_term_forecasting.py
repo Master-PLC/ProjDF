@@ -132,6 +132,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             train_loss = []
 
             lr_cur = scheduler.get_lr()
+            lr_cur = lr_cur[0] if isinstance(lr_cur, list) else lr_cur
             self.writer.add_scalar(f'{self.pred_len}/train/lr', lr_cur, self.epoch)
 
             self.model.train()
