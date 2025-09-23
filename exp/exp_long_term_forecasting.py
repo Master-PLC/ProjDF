@@ -123,7 +123,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             dtw = DTW(use_cuda=True, bandwidth=0.1)
         elif self.args.auxi_mode == 'dilate_cuda':
             assert self.device != 'cpu' and self.device != torch.device('cpu'), "DILATE only supports GPU"
-            dilate_cuda = DilateLossCUDA(alpha=self.args.alpha, gamma=self.args.gamma, bandwidth=0)
+            dilate_cuda = DilateLossCUDA(alpha=self.args.dilate_alpha, gamma=self.args.gamma, bandwidth=0)
 
         for epoch in range(self.args.train_epochs):
             self.epoch = epoch + 1
