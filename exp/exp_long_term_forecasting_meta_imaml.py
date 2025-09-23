@@ -167,25 +167,77 @@ def _replace_none_grads(params, grads):
     return out
 
 
-def conjugate_gradient(hvp_fn, b_list, iters=10, tol=1e-10):
+def conjugate_gradient(hvp_fn, b_list, iters=10, tol=1e-10, damping=1e-3):
+    """改进的共轭梯度法，增加数值稳定性"""
     x = _zeros_like_list(b_list)
     r = [b.clone() for b in b_list]
     p = [ri.clone() for ri in r]
     rdotr = _list_dot(r, r)
+    
+    # 添加数值检查
+    if torch.isnan(rdotr) or rdotr < 1e-16:
+        print("Warning: Initial residual is NaN or too small in CG")
+        return _zeros_like_list(b_list)
 
-    for _ in range(iters):
-        Ap = hvp_fn(p)  # list
-        denom = _list_dot(p, Ap) + 1e-12
-        alpha = rdotr / denom
-        x = [xi + alpha * pi for xi, pi in zip(x, p)]
-        r = [ri - alpha * Api for ri, Api in zip(r, Ap)]
-        new_rdotr = _list_dot(r, r)
-        if torch.sqrt(new_rdotr) < tol:
+    for i in range(iters):
+        try:
+            Ap = hvp_fn(p)  # list
+            
+            # 检查HVP结果
+            if any(torch.isnan(ap).any() or torch.isinf(ap).any() for ap in Ap):
+                print(f"Warning: NaN/Inf in HVP at CG iteration {i}")
+                break
+                
+            pAp = _list_dot(p, Ap)
+            # 添加阻尼项防止除零
+            denom = pAp + damping
+            
+            if abs(denom) < 1e-16:
+                print(f"Warning: Denominator too small in CG iteration {i}")
+                break
+                
+            alpha = rdotr / denom
+            
+            # 检查alpha是否合理
+            if torch.isnan(alpha) or torch.isinf(alpha) or abs(alpha) > 1e6:
+                print(f"Warning: Invalid alpha in CG iteration {i}: {alpha}")
+                break
+                
+            x = [xi + alpha * pi for xi, pi in zip(x, p)]
+            r = [ri - alpha * Api for ri, Api in zip(r, Ap)]
+            
+            new_rdotr = _list_dot(r, r)
+            
+            # 检查收敛条件和数值稳定性
+            if torch.isnan(new_rdotr) or new_rdotr < 1e-16:
+                print(f"Warning: Invalid residual in CG iteration {i}")
+                break
+                
+            if torch.sqrt(new_rdotr) < tol:
+                break
+                
+            beta = new_rdotr / (rdotr + 1e-16)
+            
+            if torch.isnan(beta) or torch.isinf(beta):
+                print(f"Warning: Invalid beta in CG iteration {i}")
+                break
+                
+            p = [ri + beta * pi for ri, pi in zip(r, p)]
+            rdotr = new_rdotr
+            
+        except Exception as e:
+            print(f"Error in CG iteration {i}: {e}")
             break
-        beta = new_rdotr / (rdotr + 1e-12)
-        p = [ri + beta * pi for ri, pi in zip(r, p)]
-        rdotr = new_rdotr
+    
+    # 最终检查结果
+    if any(torch.isnan(xi).any() or torch.isinf(xi).any() for xi in x):
+        print("Warning: NaN/Inf in final CG result, returning zeros")
+        return _zeros_like_list(b_list)
+        
     return x
+
+
+
 
 
 class Exp_Long_Term_Forecast_META_iMAML(Exp_Basic):
@@ -271,97 +323,234 @@ class Exp_Long_Term_Forecast_META_iMAML(Exp_Basic):
         return fast_params
 
     def _hvp_fn(self, task_model, theta_params, init_params, support_batch):
-        """
-        返回一个闭包 hvp(v_list) 计算 H v，其中
-        H = ∇^2_θ [ L_support(θ, A) + (λ/2)||θ - θ0||^2 ] 于当前 θ
-        """
+        """改进的HVP函数，增加数值稳定性"""
         bx, by, bx_mark, by_mark, by_cycle = support_batch
 
         def hvp(v_list):
-            # 重新计算 f(θ, A) 在当前 fast θ 上的梯度
-            outputs, batch_y, _ = self.forward_step_with_params(
-                bx, by, bx_mark, by_mark, by_cycle, theta_params, task_model
-            )
-            loss_support = self.A.get_loss(outputs, batch_y)
-            prox = 0.0
-            for name in theta_params.keys():
-                prox = prox + 0.5 * self.implicit_lambda * torch.sum((theta_params[name] - init_params[name]) ** 2)
-            f_obj = loss_support + prox
+            try:
+                # 检查输入v_list
+                if any(torch.isnan(v).any() or torch.isinf(v).any() for v in v_list):
+                    print("Warning: NaN/Inf in HVP input v_list")
+                    return _zeros_like_list(v_list)
+                
+                # 重新计算目标函数
+                outputs, batch_y, _ = self.forward_step_with_params(
+                    bx, by, bx_mark, by_mark, by_cycle, theta_params, task_model
+                )
+                
+                # 检查前向传播结果
+                if torch.isnan(outputs).any() or torch.isnan(batch_y).any():
+                    print("Warning: NaN in forward pass during HVP")
+                    return _zeros_like_list(v_list)
+                
+                loss_support = self.A.get_loss(outputs, batch_y)
+                
+                # 检查支持集损失
+                if torch.isnan(loss_support) or torch.isinf(loss_support):
+                    print("Warning: NaN/Inf in support loss during HVP")
+                    return _zeros_like_list(v_list)
+                
+                # 近端正则项
+                prox = 0.0
+                for name in theta_params.keys():
+                    diff = theta_params[name] - init_params[name]
+                    prox = prox + 0.5 * self.implicit_lambda * torch.sum(diff ** 2)
+                
+                f_obj = loss_support + prox
+                
+                # 检查目标函数
+                if torch.isnan(f_obj) or torch.isinf(f_obj):
+                    print("Warning: NaN/Inf in objective during HVP")
+                    return _zeros_like_list(v_list)
 
-            g_theta = torch.autograd.grad(
-                f_obj, list(theta_params.values()),
-                create_graph=True, retain_graph=True, allow_unused=True
-            )
-            g_theta = _replace_none_grads(list(theta_params.values()), g_theta)
-            dot = _list_dot(g_theta, v_list)
-            hv = torch.autograd.grad(
-                dot, list(theta_params.values()),
-                retain_graph=True, allow_unused=True
-            )
-            hv = _replace_none_grads(list(theta_params.values()), hv)
+                # 计算一阶梯度
+                theta_list = list(theta_params.values())
+                g_theta = torch.autograd.grad(
+                    f_obj, theta_list,
+                    create_graph=True, retain_graph=True, allow_unused=True
+                )
+                g_theta = _replace_none_grads(theta_list, g_theta)
+                
+                # 检查一阶梯度
+                if any(torch.isnan(g).any() or torch.isinf(g).any() for g in g_theta):
+                    print("Warning: NaN/Inf in first-order gradients during HVP")
+                    return _zeros_like_list(v_list)
 
-            if self.cg_damping != 0.0:
-                hv = [hvi + self.cg_damping * vi for hvi, vi in zip(hv, v_list)]
-            return hv
+                # 计算梯度与v的内积
+                dot = _list_dot(g_theta, v_list)
+                
+                if torch.isnan(dot) or torch.isinf(dot):
+                    print("Warning: NaN/Inf in dot product during HVP")
+                    return _zeros_like_list(v_list)
+
+                # 计算二阶梯度（HVP）
+                hv = torch.autograd.grad(
+                    dot, theta_list,
+                    retain_graph=True, allow_unused=True
+                )
+                hv = _replace_none_grads(theta_list, hv)
+
+                # 检查HVP结果
+                if any(torch.isnan(h).any() or torch.isinf(h).any() for h in hv):
+                    print("Warning: NaN/Inf in HVP result")
+                    return _zeros_like_list(v_list)
+
+                # 添加阻尼
+                if self.cg_damping > 0:
+                    hv = [hvi + self.cg_damping * vi for hvi, vi in zip(hv, v_list)]
+
+                return hv
+                
+            except Exception as e:
+                print(f"Error in HVP computation: {e}")
+                return _zeros_like_list(v_list)
 
         return hvp
 
     def _implicit_meta_grad_A(self, task_model, init_params, theta_params, support_batch, query_batch):
-        """
-        使用 iMAML 公式得到对 A 的梯度：
-        ∇_A L_val(θ*, A) - ∂/∂A [ ∇_θ f(θ*, A) ⋅ s ]，其中 s = H^{-1} ∇_θ L_val
-        """
-        # 1) 验证集损失与 ∇_θ L_val
-        bx_q, by_q, bxm_q, bym_q, cyc_q = query_batch
-        outputs_q, batch_y_q, _ = self.forward_step_with_params(
-            bx_q, by_q, bxm_q, bym_q, cyc_q, theta_params, task_model
-        )
-        L_val = self.A.get_loss(outputs_q, batch_y_q)
+        """改进的隐式梯度计算，增加数值稳定性检查"""
+        try:
+            # 1) 计算验证集损失和梯度
+            bx_q, by_q, bxm_q, bym_q, cyc_q = query_batch
+            outputs_q, batch_y_q, _ = self.forward_step_with_params(
+                bx_q, by_q, bxm_q, bym_q, cyc_q, theta_params, task_model
+            )
+            
+            # 检查前向传播结果
+            if torch.isnan(outputs_q).any() or torch.isnan(batch_y_q).any():
+                print("Warning: NaN in query forward pass")
+                return self._get_zero_grads_A(), float('inf')
+            
+            L_val = self.A.get_loss(outputs_q, batch_y_q)
+            
+            # 检查验证损失
+            if torch.isnan(L_val) or torch.isinf(L_val):
+                print("Warning: NaN/Inf in validation loss")
+                return self._get_zero_grads_A(), float('inf')
 
-        theta_list = list(theta_params.values())
-        g_val_theta = torch.autograd.grad(
-            L_val, theta_list, retain_graph=True, allow_unused=True
-        )
-        g_val_theta = _replace_none_grads(theta_list, g_val_theta)
+            theta_list = list(theta_params.values())
+            g_val_theta = torch.autograd.grad(
+                L_val, theta_list, retain_graph=True, allow_unused=True
+            )
+            g_val_theta = _replace_none_grads(theta_list, g_val_theta)
+            
+            # 检查验证集梯度
+            if any(torch.isnan(g).any() or torch.isinf(g).any() for g in g_val_theta):
+                print("Warning: NaN/Inf in validation gradients")
+                return self._get_zero_grads_A(), float('inf')
 
-        # 2) 用 CG 求解 s：H s = g_val_theta
-        hvp = self._hvp_fn(task_model, theta_params, init_params, support_batch)
-        s_list = conjugate_gradient(hvp, g_val_theta, iters=self.cg_iters, tol=self.cg_tol)
-        s_list_detached = [s.detach() for s in s_list]  # stop-gradient
+            # 2) 使用共轭梯度求解
+            hvp = self._hvp_fn(task_model, theta_params, init_params, support_batch)
+            s_list = conjugate_gradient(
+                hvp, g_val_theta, 
+                iters=self.cg_iters, 
+                tol=self.cg_tol,
+                damping=max(self.cg_damping, 1e-4)  # 确保有最小阻尼
+            )
+            
+            # 检查CG结果
+            if any(torch.isnan(s).any() or torch.isinf(s).any() for s in s_list):
+                print("Warning: NaN/Inf in CG solution")
+                return self._get_zero_grads_A(), float('inf')
+            
+            s_list_detached = [s.detach() for s in s_list]
 
-        # 3) 第一项：∇_A L_val
+            # 3) 计算第一项：∇_A L_val
+            A_params = list(self.A.parameters())
+            try:
+                g_val_A = torch.autograd.grad(
+                    L_val, A_params, retain_graph=True, allow_unused=True
+                )
+                g_val_A = [torch.zeros_like(p) if g is None else g for p, g in zip(A_params, g_val_A)]
+                
+                # 检查第一项梯度
+                if any(torch.isnan(g).any() or torch.isinf(g).any() for g in g_val_A):
+                    print("Warning: NaN/Inf in first term gradient wrt A")
+                    return self._get_zero_grads_A(), float('inf')
+                    
+            except Exception as e:
+                print(f"Error computing first term: {e}")
+                return self._get_zero_grads_A(), float('inf')
+
+            # 4) 计算第二项：∂/∂A [ ∇_θ f(θ*, A) ⋅ s ]
+            try:
+                bx_s, by_s, bxm_s, bym_s, cyc_s = support_batch
+                outputs_s, batch_y_s, _ = self.forward_step_with_params(
+                    bx_s, by_s, bxm_s, bym_s, cyc_s, theta_params, task_model
+                )
+                
+                if torch.isnan(outputs_s).any() or torch.isnan(batch_y_s).any():
+                    print("Warning: NaN in support forward pass for second term")
+                    return self._get_zero_grads_A(), float('inf')
+                
+                L_sup = self.A.get_loss(outputs_s, batch_y_s)
+                
+                if torch.isnan(L_sup) or torch.isinf(L_sup):
+                    print("Warning: NaN/Inf in support loss for second term")
+                    return self._get_zero_grads_A(), float('inf')
+                
+                # 近端项
+                prox = 0.0
+                for name in theta_params.keys():
+                    diff = theta_params[name] - init_params[name]
+                    prox = prox + 0.5 * self.implicit_lambda * torch.sum(diff ** 2)
+                
+                f_obj = L_sup + prox
+
+                g_sup_theta = torch.autograd.grad(
+                    f_obj, theta_list, create_graph=True, retain_graph=True, allow_unused=True
+                )
+                g_sup_theta = _replace_none_grads(theta_list, g_sup_theta)
+                
+                if any(torch.isnan(g).any() or torch.isinf(g).any() for g in g_sup_theta):
+                    print("Warning: NaN/Inf in support gradients for second term")
+                    return self._get_zero_grads_A(), float('inf')
+
+                dot_cross = _list_dot(g_sup_theta, s_list_detached)
+                
+                if torch.isnan(dot_cross) or torch.isinf(dot_cross):
+                    print("Warning: NaN/Inf in cross dot product")
+                    return self._get_zero_grads_A(), float('inf')
+
+                g_cross_A = torch.autograd.grad(
+                    dot_cross, A_params, retain_graph=False, allow_unused=True
+                )
+                g_cross_A = [torch.zeros_like(p) if g is None else g for p, g in zip(A_params, g_cross_A)]
+                
+                if any(torch.isnan(g).any() or torch.isinf(g).any() for g in g_cross_A):
+                    print("Warning: NaN/Inf in second term gradient wrt A")
+                    return self._get_zero_grads_A(), float('inf')
+                    
+            except Exception as e:
+                print(f"Error computing second term: {e}")
+                return self._get_zero_grads_A(), float('inf')
+
+            # 5) 组合最终梯度
+            grad_A = [gv - gc for gv, gc in zip(g_val_A, g_cross_A)]
+            
+            # 最终检查和裁剪
+            max_grad_norm = 1.0
+            for i, g in enumerate(grad_A):
+                if torch.isnan(g).any() or torch.isinf(g).any():
+                    print(f"Warning: NaN/Inf in final gradient for A parameter {i}")
+                    grad_A[i] = torch.zeros_like(g)
+                else:
+                    # 梯度裁剪
+                    grad_norm = torch.norm(g)
+                    if grad_norm > max_grad_norm:
+                        grad_A[i] = g * (max_grad_norm / grad_norm)
+
+            L_val_item = L_val.item()
+            return grad_A, L_val_item
+            
+        except Exception as e:
+            print(f"Error in implicit meta grad computation: {e}")
+            return self._get_zero_grads_A(), float('inf')
+
+    def _get_zero_grads_A(self):
+        """返回零梯度，用于错误情况"""
         A_params = list(self.A.parameters())
-        g_val_A = torch.autograd.grad(
-            L_val, A_params, retain_graph=True, allow_unused=True
-        )
-        g_val_A = [torch.zeros_like(p) if g is None else g for p, g in zip(A_params, g_val_A)]
-
-        # 4) 第二项：∂/∂A [ ∇_θ f(θ*, A) ⋅ s ]
-        bx_s, by_s, bxm_s, bym_s, cyc_s = support_batch
-        outputs_s, batch_y_s, _ = self.forward_step_with_params(
-            bx_s, by_s, bxm_s, bym_s, cyc_s, theta_params, task_model
-        )
-        L_sup = self.A.get_loss(outputs_s, batch_y_s)
-        prox = 0.0
-        for name in theta_params.keys():
-            prox = prox + 0.5 * self.implicit_lambda * torch.sum((theta_params[name] - init_params[name]) ** 2)
-        f_obj = L_sup + prox
-
-        g_sup_theta = torch.autograd.grad(
-            f_obj, theta_list, create_graph=True, retain_graph=True, allow_unused=True
-        )
-        g_sup_theta = _replace_none_grads(theta_list, g_sup_theta)
-        dot_cross = _list_dot(g_sup_theta, s_list_detached)
-
-        g_cross_A = torch.autograd.grad(
-            dot_cross, A_params, retain_graph=False, allow_unused=True
-        )
-        g_cross_A = [torch.zeros_like(p) if g is None else g for p, g in zip(A_params, g_cross_A)]
-
-        # meta grad wrt A
-        grad_A = [gv - gc for gv, gc in zip(g_val_A, g_cross_A)]
-        L_val_item = L_val.item()
-        return grad_A, L_val_item
+        return [torch.zeros_like(p) for p in A_params]
 
     def forward_step_with_params(self, batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle, params, model):
         batch_x = batch_x.float().to(self.device)
@@ -438,6 +627,12 @@ class Exp_Long_Term_Forecast_META_iMAML(Exp_Basic):
             for task_id, (support_loader, query_loader) in enumerate(zip(support_loader_list, query_loader_list)):
                 task_model = self.task_models[task_id]
 
+                # 检查模型参数是否包含nan
+                for name, param in task_model.named_parameters():
+                    if torch.isnan(param).any():
+                        print(f"Warning: NaN detected in model parameter {name}")
+                        param.data.zero_()  # 重置为0
+
                 # 初始化 fast params 与 init params（均为叶子张量，允许求导）
                 init_params = {k: v.clone().detach().requires_grad_(True) for k, v in get_param_dict(task_model).items()}
                 fast_params = {k: v.clone().detach().requires_grad_(True) for k, v in init_params.items()}
@@ -453,6 +648,11 @@ class Exp_Long_Term_Forecast_META_iMAML(Exp_Basic):
                 grad_A_task, L_val_item = self._implicit_meta_grad_A(
                     task_model, init_params, fast_params, sup_batch, qry_batch
                 )
+                # 检查梯度是否为nan
+                for i, g in enumerate(grad_A_task):
+                    if torch.isnan(g).any() or torch.isinf(g).any():
+                        print(f"Warning: NaN/Inf in gradient for A parameter {i}, task {task_id}")
+                        grad_A_task[i] = torch.zeros_like(g)
                 accum_grads_A = [ag + g for ag, g in zip(accum_grads_A, grad_A_task)]
                 task_val_losses.append(L_val_item)
 
@@ -481,7 +681,7 @@ class Exp_Long_Term_Forecast_META_iMAML(Exp_Basic):
                 A_scheduler.step(verbose=verbose)
             else:
                 if verbose:
-                    A_scheduler.step(avg_meta_loss_val, meta_step // 100)
+                    A_scheduler.step(avg_val_loss, meta_step // 100)
 
         best_A_path = os.path.join(path, 'A.pth')
         torch.save(self.A, best_A_path)

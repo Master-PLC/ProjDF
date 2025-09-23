@@ -245,10 +245,10 @@ if __name__ == '__main__':
     parser.add_argument('--meta_type', type=str, default='all', help='meta learning type')
     parser.add_argument('--num_tasks_per_step', type=int, default=2, help='number of tasks per step')
     parser.add_argument('--meta_inner_step_update_every', type=int, default=10, help='update meta inner step every n steps')
-    parser.add_argument('--implicit_lambda', type=float, default=0.001, help='meta inner step learning rate', action=EvalAction)
-    parser.add_argument('--cg_iters', type=int, default=10, help='cg iters')
-    parser.add_argument('--cg_tol', type=float, default=1e-10, help='cg tol', action=EvalAction)
-    parser.add_argument('--cg_damping', type=float, default=0.0, help='cg damping', action=EvalAction)
+    parser.add_argument('--implicit_lambda', type=float, default=0.01, help='meta inner step learning rate', action=EvalAction)
+    parser.add_argument('--cg_iters', type=int, default=5, help='cg iters')
+    parser.add_argument('--cg_tol', type=float, default=1e-6, help='cg tol', action=EvalAction)
+    parser.add_argument('--cg_damping', type=float, default=0.001, help='cg damping', action=EvalAction)
 
     # CycleNet
     parser.add_argument('--cycle', type=int, default=24, help='cycle length')

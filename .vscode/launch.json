@@ -172,17 +172,17 @@
                 "--fixed_step", "300",
                 "--num_tasks", "3",
                 "--meta_inner_steps", "1",
-                "--first_order", "1",
+                "--first_order", "0",
                 "--overlap_ratio", "0.0",
                 "--meta_optim_type", "sgd",
                 "--max_norm", "5.0",
-                "--warmup_steps", "300",
-                "--model_per_task", "1",
+                "--warmup_steps", "100",
+                "--model_per_task", "0",
                 "--period_list", "[2,3,6,8]",
                 "--patch_len_list", "[1,1,2,2]",
                 "--stride_list", "[1,1,2,2]",
                 "--kernel_list", "[3,7,9]",
-                "--meta_type", "off_diag"
+                "--meta_type", "all"
             ],
         },
 
