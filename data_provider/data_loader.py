@@ -225,7 +225,7 @@ class Dataset_ETT_hour_PCA(Dataset_ETT_hour):
         print("Fitting PCA ...")
         label_seq = []
         for i in range(self.__len__()):
-            _, label, _, _ = self.__getitem__(i)
+            _, label, _, _, _ = self.__getitem__(i)
             label = label[-self.pred_len:]
             label_seq.append(label)
         label_seq = np.array(label_seq)  # shape: [N, P, D]
@@ -448,7 +448,7 @@ class Dataset_ETT_minute_PCA(Dataset_ETT_minute):
         print("Fitting PCA ...")
         label_seq = []
         for i in range(self.__len__()):
-            _, label, _, _ = self.__getitem__(i)
+            _, label, _, _, _ = self.__getitem__(i)
             label = label[-self.pred_len:]
             label_seq.append(label)
         label_seq = np.array(label_seq)  # shape: [N, P, D]
@@ -714,7 +714,7 @@ class Dataset_Custom_PCA(Dataset_Custom):
         print("Fitting PCA ...")
         label_seq = []
         for i in range(self.__len__()):
-            _, label, _, _ = self.__getitem__(i)
+            _, label, _, _, _ = self.__getitem__(i)
             label = label[-self.pred_len:]
             label_seq.append(label)
         label_seq = np.array(label_seq)  # shape: [N, P, D]
@@ -747,7 +747,7 @@ class Dataset_Custom_FA(Dataset_Custom):
         print("Fitting FA ...")
         label_seq = []
         for i in range(self.__len__()):
-            _, label, _, _ = self.__getitem__(i)
+            _, label, _, _, _ = self.__getitem__(i)
             label = label[-self.pred_len:]
             label_seq.append(label)
         label_seq = np.array(label_seq)  # shape: [N, P, D]
@@ -780,7 +780,7 @@ class Dataset_Custom_RobustPCA(Dataset_Custom):
         print("Fitting Robust PCA ...")
         label_seq = []
         for i in range(self.__len__()):
-            _, label, _, _ = self.__getitem__(i)
+            _, label, _, _, _ = self.__getitem__(i)
             label = label[-self.pred_len:]
             label_seq.append(label)
         label_seq = np.array(label_seq)  # shape: [N, P, D]
@@ -813,7 +813,7 @@ class Dataset_Custom_SVD(Dataset_Custom):
         print("Fitting SVD ...")
         label_seq = []
         for i in range(self.__len__()):
-            _, label, _, _ = self.__getitem__(i)
+            _, label, _, _, _ = self.__getitem__(i)
             label = label[-self.pred_len:]
             label_seq.append(label)
         label_seq = np.array(label_seq)  # shape: [N, P, D]
@@ -845,7 +845,7 @@ class Dataset_Custom_ICA(Dataset_Custom):
         print("Fitting ICA ...")
         label_seq = []
         for i in range(self.__len__()):
-            _, label, _, _ = self.__getitem__(i)
+            _, label, _, _, _ = self.__getitem__(i)
             label = label[-self.pred_len:]
             label_seq.append(label)
         label_seq = np.array(label_seq)  # shape: [N, P, D]
@@ -879,7 +879,7 @@ class Dataset_Custom_RobustICA(Dataset_Custom):
         print("Fitting Robust ICA ...")
         label_seq = []
         for i in range(self.__len__()):
-            _, label, _, _ = self.__getitem__(i)
+            _, label, _, _, _ = self.__getitem__(i)
             label = label[-self.pred_len:]
             label_seq.append(label)
         label_seq = np.array(label_seq)  # shape: [N, P, D]
@@ -1135,7 +1135,7 @@ class Dataset_PEMS_PCA(Dataset_PEMS):
         print("Fitting PCA ...")
         label_seq = []
         for i in range(self.__len__()):
-            _, label, _, _ = self.__getitem__(i)
+            _, label, _, _, _ = self.__getitem__(i)
             label = label[-self.pred_len:]
             label_seq.append(label)
         label_seq = np.array(label_seq)  # shape: [N, P, D]
@@ -1404,7 +1404,7 @@ class Dataset_M4_PCA(Dataset_M4):
         print("Fitting PCA ...")
         label_seq = []
         for i in range(self.__len__()):
-            _, label, _, _ = self.__getitem__(i)
+            _, label, _, _, _ = self.__getitem__(i)
             label = label[-self.pred_len:]
             label_seq.append(label)
         label_seq = np.array(label_seq)  # shape: [N, P, D]
