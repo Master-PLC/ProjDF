@@ -72,6 +72,11 @@ class CovarianceMatrix(nn.Module):
             # 只取严格下三角部分（不包括对角线），对角线固定为1
             L = torch.tril(L_param, diagonal=-1)
             L = L + torch.eye(self.pred_len, device=L.device, dtype=L.dtype)
+
+            # 对每一行进行归一化，确保A=L@L.T的对角线为1
+            row_norms = torch.norm(L, dim=1, keepdim=True)
+            row_norms = torch.clamp(row_norms, min=self.eps)  # 避免除零
+            L = L / row_norms
             return L
 
     def forward(self, params=None):
