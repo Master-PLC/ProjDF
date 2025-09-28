@@ -38,6 +38,9 @@ class CovarianceMatrix(nn.Module):
             raise ValueError(f"Unknown meta_type: {self.meta_type}. Supported types: ['all', 'diag', 'off_diag']")
 
     def _get_L(self, params=None):
+        if not hasattr(self, 'meta_type'):
+            self.meta_type = 'all'
+
         if self.meta_type == 'all':
             # 原始模式：完整的Cholesky分解
             if params is None:
