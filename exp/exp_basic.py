@@ -26,17 +26,18 @@ class Exp_Basic(object):
         self.output_pred = args.output_pred
         self.output_vis = args.output_vis
 
-    def _build_model(self):
-        model = self.model_dict[self.args.model].Model(self.args).float()
+    def _build_model(self, args=None):
+        args = self.args if args is None else args
+        model = self.model_dict[args.model].Model(args).float()
 
-        pretrain_model_path = self.args.pretrain_model_path
+        pretrain_model_path = args.pretrain_model_path
         if pretrain_model_path and os.path.exists(pretrain_model_path):
             print(f'Loading pretrained model from {pretrain_model_path}')
             state_dict = torch.load(pretrain_model_path)
             model.load_state_dict(state_dict, strict=False)
 
-        if self.args.use_multi_gpu and self.args.use_gpu:
-            model = nn.DataParallel(model, device_ids=self.args.device_ids)
+        if args.use_multi_gpu and args.use_gpu:
+            model = nn.DataParallel(model, device_ids=args.device_ids)
         return model
 
     def _acquire_device(self):

@@ -152,7 +152,7 @@ if __name__ == '__main__':
     parser.add_argument('--learn_y_proj', type=int, default=1, help='learn y projector; True 1 False 0')
     parser.add_argument('--proj_init', type=str, default='identity', help='initialization of projector, options: [identity, random, pca, cca]')
     parser.add_argument('--pre_norm', type=int, default=1, help='pre-normalization; True 1 False 0')
-    parser.add_argument('--cca_type', type=str, default='cosine', help='type of cca loss, options: [svd, eigh, cosine]')
+    parser.add_argument('--corr_type', type=str, default='cosine', help='type of correlation, options: [svd, eigh, cosine]')
     parser.add_argument('--identity_direction', type=str, default='left', help='direction of identity projector, options: [left, right, both]')
     parser.add_argument('--load_from_disk', type=str, default="")
     parser.add_argument('--grad_clip', type=float, default=4.0, help='gradient clipping value')

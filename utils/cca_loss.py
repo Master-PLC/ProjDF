@@ -151,19 +151,19 @@ def robust_cca_loss(X, Y, rank_ratio=1.0, r1=1e-3, r2=1e-3, eps=1e-9, device='cp
     return -corr
 
 
-def cca_loss(X, Y, align_type=1, rank_ratio=1.0, device='cpu', r1=1e-3, r2=1e-3, eps=1e-9, n_retry=3, stride=1, loss_type='cosine'):
+def cca_loss(X, Y, align_type=1, rank_ratio=1.0, device='cpu', r1=1e-3, r2=1e-3, eps=1e-9, n_retry=3, stride=1, corr_type='cosine'):
     """
     X: [B, S, D], Y: [B, P, D]
     """
-    if loss_type == 'svd':
+    if corr_type == 'svd':
         cal_corr_func = cal_corr_svd
-    elif loss_type == 'eigh':
+    elif corr_type == 'eigh':
         cal_corr_func = cal_corr
-    elif loss_type == 'cosine':
+    elif corr_type == 'cosine':
         cal_corr_func = cal_corr_cosine
-    elif loss_type == 'pearson':
+    elif corr_type == 'pearson':
         cal_corr_func = cal_corr_pearson
-    elif loss_type == 'dual':
+    elif corr_type == 'dual':
         cal_corr_func = robust_cca_loss
 
     if align_type == 0:

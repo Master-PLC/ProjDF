@@ -40,18 +40,7 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
         args.enc_in = self.proj_dim
         args.dec_in = self.proj_dim
         args.c_out = self.proj_dim
-
-        model = self.model_dict[args.model].Model(args).float()
-
-        pretrain_model_path = args.pretrain_model_path
-        if pretrain_model_path and os.path.exists(pretrain_model_path):
-            print(f'Loading pretrained model from {pretrain_model_path}')
-            state_dict = torch.load(pretrain_model_path)
-            model.load_state_dict(state_dict, strict=False)
-
-        if args.use_multi_gpu and args.use_gpu:
-            model = nn.DataParallel(model, device_ids=args.device_ids)
-        return model
+        return super()._build_model(args)
 
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
@@ -70,7 +59,6 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
                 total_loss.append(loss)
 
         print('Validation cost time: {}'.format(time.time() - eval_time))
-        # total_loss = np.average(total_loss)
         total_loss = torch.mean(torch.stack(total_loss)).item()  # average loss
         self.model.train()
         return total_loss
@@ -147,6 +135,7 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
             y_proj = torch.randn((self.proj_dim, self.args.dec_in), dtype=torch.float32).to(self.device)
 
         elif self.args.proj_init == 'cca':
+            assert self.args.align_type != 7, "CCA projection initialization is not supported for align_type 7"
             assert '_CCA' in self.args.data, "CCA projection initialization requires '_CCA' in dataset name"
             x_proj, y_proj = train_data.Wx, train_data.Wy.T  # [D, rank] and [rank, D]
             x_proj = torch.as_tensor(x_proj).float().to(self.device)
@@ -156,12 +145,12 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
             self.means = [torch.as_tensor(m).float().to(self.device) for m in self.means]
             self.stds = [torch.as_tensor(s).float().to(self.device) for s in self.stds]
 
-        if self.args.proj_init in ['linear', 'mlp']:
-            disable_grad(self.x_proj)
-            disable_grad(self.y_proj)
-        else:
-            self.x_proj = nn.Parameter(x_proj, requires_grad=False)
-            self.y_proj = nn.Parameter(y_proj, requires_grad=False)
+        if self.args.proj_init not in ['linear', 'mlp']:
+            self.x_proj = nn.Parameter(x_proj)
+            self.y_proj = nn.Parameter(y_proj)
+
+        disable_grad(self.x_proj)
+        disable_grad(self.y_proj)
 
         if self.args.proj_init in ['linear', 'mlp']:
             proj_params = list(self.x_proj.parameters()) + list(self.y_proj.parameters())
@@ -203,6 +192,8 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
             self.epoch = epoch + 1
             iter_count = 0
             train_loss = []
+            rec_losses, auxi_losses = [], []
+            reg_losses, decorr_losses = [], []
 
             lr_cur = scheduler.get_lr()
             if isinstance(lr_cur, list):
@@ -228,7 +219,10 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
                         loss += self.args.rec_lambda * loss_rec
                     else:
                         loss += loss_rec
-                    self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', loss_rec, self.step)
+                else:
+                    loss_rec = torch.tensor(1000., device=self.device)
+                rec_losses.append(loss_rec.item())
+                self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', loss_rec, self.step)
 
                 if self.args.auxi_lambda and self.args.auxi_mode == "cca" and self.projection_learning:
                     if self.args.joint_forecast:  # joint distribution forecasting
@@ -237,18 +231,24 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
 
                     loss_auxi = cca_loss(
                         batch_x, predictions, align_type=int(self.args.auxi_type), rank_ratio=self.args.rank_ratio, 
-                        device=self.device, r1=self.args.reg_cca, r2=self.args.reg_cca, eps=self.args.eps, loss_type=self.args.cca_type
+                        device=self.device, r1=self.args.reg_cca, r2=self.args.reg_cca, eps=self.args.eps, corr_type=self.args.corr_type
                     )
                     loss += self.args.auxi_lambda * loss_auxi
-                    self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', loss_auxi, self.step)
+                else:
+                    loss_auxi = torch.tensor(1000., device=self.device)
+                auxi_losses.append(loss_auxi.item())
+                self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', loss_auxi, self.step)
 
                 if self.args.decorr_lambda and self.projection_learning:
                     loss_decorr = channel_decorrelation_loss(batch_x, p=1) + channel_decorrelation_loss(predictions, p=1)
                     loss += self.args.decorr_lambda * loss_decorr
-                    self.writer.add_scalar(f'{self.pred_len}/train/loss_decorr', loss_decorr, self.step)
+                else:
+                    loss_decorr = torch.tensor(1000., device=self.device)
+                decorr_losses.append(loss_decorr.item())
+                self.writer.add_scalar(f'{self.pred_len}/train/loss_decorr', loss_decorr, self.step)
 
                 if self.args.reg_lambda and self.projection_learning:
-                    if self.args.cca_type == 'cosine':
+                    if self.args.corr_type == 'cosine':
                         reg_loss_x = torch.norm(batch_x, p=2)
                         reg_loss_y = torch.norm(predictions, p=2)
                     else:
@@ -273,13 +273,20 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
                         reg_loss += reg_loss_y
 
                     loss += self.args.reg_lambda * reg_loss
-                    self.writer.add_scalar(f'{self.pred_len}/train/loss_reg', reg_loss.item(), self.step)
+                else:
+                    reg_loss = torch.tensor(1000., device=self.device)
+                reg_losses.append(reg_loss.item())
+                self.writer.add_scalar(f'{self.pred_len}/train/loss_reg', reg_loss.item(), self.step)
 
                 train_loss.append(loss.item())
                 self.writer.add_scalar(f'{self.pred_len}/train/loss_iter', loss.item(), self.step)
 
                 if (i + 1) % 100 == 0:
-                    print("\titers: {}, epoch: {} | loss: {:.7f}".format(i + 1, self.epoch, loss.item()))
+                    print(
+                        "\titers: {}, epoch: {} | loss: {:.7f}, loss_rec: {:.7f}, loss_auxi: {:.7f}, loss_decorr: {:.7f}, loss_reg: {:.7f}".format(
+                            i + 1, self.epoch, loss.item(), loss_rec.item(), loss_auxi.item(), loss_decorr.item(), reg_loss.item()
+                        )
+                    )
                     cost_time = time.time() - time_now
                     speed = cost_time / iter_count
                     left_time = speed * ((self.args.train_epochs - epoch) * train_steps - i)
@@ -296,16 +303,22 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
 
             print("Epoch: {} cost time: {}".format(self.epoch, time.time() - epoch_time))
             train_loss = np.average(train_loss)
+            loss_rec = np.average(loss_rec); loss_auxi = np.average(loss_auxi)
+            loss_reg = np.average(reg_losses); loss_decorr = np.average(decorr_losses)
             vali_loss = self.vali(vali_data, vali_loader, criterion)
 
             self.writer.add_scalar(f'{self.pred_len}/train/loss', train_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', loss_rec, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', loss_auxi, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss_reg', loss_reg, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss_decorr', loss_decorr, self.epoch)
             self.writer.add_scalar(f'{self.pred_len}/vali/loss', vali_loss, self.epoch)
             log_heatmap(self.writer, get_projection(self.x_proj, self.args.proj_init), f'{self.pred_len}/x_proj', self.epoch)
             log_heatmap(self.writer, get_projection(self.y_proj, self.args.proj_init), f'{self.pred_len}/y_proj', self.epoch)
 
             print(
-                "Epoch: {}, Steps: {} | Train Loss: {:.7f} Vali Loss: {:.7f}".format(
-                    self.epoch, self.step, train_loss, vali_loss
+                "Epoch: {}, Steps: {} | Train Loss: {:.7f} Loss_rec: {:.7f} Loss_auxi: {:.7f} Loss_decorr: {:.7f} Loss_reg: {:.7f} | Vali Loss: {:.7f}".format(
+                    self.epoch, self.step, train_loss, loss_rec, loss_auxi, loss_decorr, loss_reg, vali_loss
                 )
             )
             other_to_save = {'x_proj': self.x_proj, 'y_proj': self.y_proj}

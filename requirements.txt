@@ -12,16 +12,21 @@
 # pip install -r requirements.txt
 #####################
 
+cca-zoo[probabilistic,visualisation,deep]
 cuml-cu11
 einops
+h5py
 ipykernel
 isort
+jaxlib
+lightning
 matplotlib
 numba
 openpyxl
 pandas
 patool
 pot
+pytorch-lightning
 pyrpca
 pyyaml
 PyWavelets
@@ -36,6 +41,7 @@ sktime
 sympy
 tensorboard
 tensorboard-plugin-profile
+tensorly
 thop
 torchinfo
 torch_dct
@@ -44,3 +50,4 @@ torchmetrics
 torch_tb_profiler
 tqdm
 tsdistances
+xarray

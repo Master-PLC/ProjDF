@@ -265,7 +265,7 @@ class Dataset_ETT_hour_CCA(Dataset_ETT_hour):
             self.means = np.load(os.path.join(self.load_from_disk, f'means_{self.align_type}.npy'))
             self.stds = np.load(os.path.join(self.load_from_disk, f'stds_{self.align_type}.npy'))
         else:
-            if self.align_type != 5:
+            if self.align_type not in [5, 7]:
                 input_seq, label_seq = [], []
                 for i in range(self.__len__()):
                     inp, label, _, _ = self.__getitem__(i)
@@ -277,6 +277,9 @@ class Dataset_ETT_hour_CCA(Dataset_ETT_hour):
             elif self.align_type == 5:
                 input_seq = self.data_x[:-self.pred_len]  # shape: [N, D]
                 label_seq = self.data_y[self.pred_len:]  # shape: [N, D]
+            elif self.align_type == 7:
+                print("For align type 7, there's no need for CCA.")
+                return
             self.Wx, self.Wy, self.means, self.stds = get_cca_projection(
                 input_seq, label_seq, 1.0, pca_dim, self.speedup_sklearn, self.align_type
             )
@@ -488,7 +491,7 @@ class Dataset_ETT_minute_CCA(Dataset_ETT_minute):
             self.means = np.load(os.path.join(self.load_from_disk, f'means_{self.align_type}.npy'))
             self.stds = np.load(os.path.join(self.load_from_disk, f'stds_{self.align_type}.npy'))
         else:
-            if self.align_type != 5:
+            if self.align_type not in [5, 7]:
                 input_seq, label_seq = [], []
                 for i in range(self.__len__()):
                     inp, label, _, _ = self.__getitem__(i)
@@ -500,6 +503,9 @@ class Dataset_ETT_minute_CCA(Dataset_ETT_minute):
             elif self.align_type == 5:
                 input_seq = self.data_x[:-self.pred_len]  # shape: [N, D]
                 label_seq = self.data_y[self.pred_len:]  # shape: [N, D]
+            elif self.align_type == 7:
+                print("For align type 7, there's no need for CCA.")
+                return
             self.Wx, self.Wy, self.means, self.stds = get_cca_projection(
                 input_seq, label_seq, 1.0, pca_dim, self.speedup_sklearn, self.align_type
             )
@@ -918,7 +924,7 @@ class Dataset_Custom_CCA(Dataset_Custom):
             self.means = np.load(os.path.join(self.load_from_disk, f'means_{self.align_type}.npy'))
             self.stds = np.load(os.path.join(self.load_from_disk, f'stds_{self.align_type}.npy'))
         else:
-            if self.align_type != 5:
+            if self.align_type not in [5, 7]:
                 input_seq, label_seq = [], []
                 for i in range(self.__len__()):
                     inp, label, _, _ = self.__getitem__(i)
@@ -930,6 +936,9 @@ class Dataset_Custom_CCA(Dataset_Custom):
             elif self.align_type == 5:
                 input_seq = self.data_x[:-self.pred_len]  # shape: [N, D]
                 label_seq = self.data_y[self.pred_len:]  # shape: [N, D]
+            elif self.align_type == 7:
+                print("For align type 7, there's no need for CCA.")
+                return
             self.Wx, self.Wy, self.means, self.stds = get_cca_projection(
                 input_seq, label_seq, 1.0, pca_dim, self.speedup_sklearn, self.align_type
             )
@@ -1175,7 +1184,7 @@ class Dataset_PEMS_CCA(Dataset_PEMS):
             self.means = np.load(os.path.join(self.load_from_disk, f'means_{self.align_type}.npy'))
             self.stds = np.load(os.path.join(self.load_from_disk, f'stds_{self.align_type}.npy'))
         else:
-            if self.align_type != 5:
+            if self.align_type not in [5, 7]:
                 input_seq, label_seq = [], []
                 for i in range(self.__len__()):
                     inp, label, _, _ = self.__getitem__(i)
@@ -1187,6 +1196,9 @@ class Dataset_PEMS_CCA(Dataset_PEMS):
             elif self.align_type == 5:
                 input_seq = self.data_x[:-self.pred_len]  # shape: [N, D]
                 label_seq = self.data_y[self.pred_len:]  # shape: [N, D]
+            elif self.align_type == 7:
+                print("For align type 7, there's no need for CCA.")
+                return
             self.Wx, self.Wy, self.means, self.stds = get_cca_projection(
                 input_seq, label_seq, 1.0, pca_dim, self.speedup_sklearn, self.align_type, add_noise=self.add_noise
             )
