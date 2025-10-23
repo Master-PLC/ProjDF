@@ -156,7 +156,7 @@ if __name__ == '__main__':
     parser.add_argument('--identity_direction', type=str, default='left', help='direction of identity projector, options: [left, right, both]')
     parser.add_argument('--load_from_disk', type=str, default="")
     parser.add_argument('--grad_clip', type=float, default=4.0, help='gradient clipping value')
-    parser.add_argument('--eps', type=float, default=1e-9, help='epsilon for numerical stability in CCA')
+    parser.add_argument('--eps', action=EvalAction, default=1e-9, help='epsilon for numerical stability in CCA')
 
     # GPU
     parser.add_argument('--use_gpu', type=bool, default=True, help='use gpu')

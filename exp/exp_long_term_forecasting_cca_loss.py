@@ -230,7 +230,7 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
                         batch_y = torch.concat((batch_x.to(batch_y.device), batch_y), dim=1)  # [B, S+P, D]
 
                     loss_auxi = cca_loss(
-                        batch_x, predictions, align_type=int(self.args.auxi_type), rank_ratio=self.args.rank_ratio, 
+                        batch_x, predictions, align_type=int(self.args.align_type), rank_ratio=self.args.rank_ratio, 
                         device=self.device, r1=self.args.reg_cca, r2=self.args.reg_cca, eps=self.args.eps, corr_type=self.args.corr_type
                     )
                     loss += self.args.auxi_lambda * loss_auxi
@@ -303,7 +303,7 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
 
             print("Epoch: {} cost time: {}".format(self.epoch, time.time() - epoch_time))
             train_loss = np.average(train_loss)
-            loss_rec = np.average(loss_rec); loss_auxi = np.average(loss_auxi)
+            loss_rec = np.average(rec_losses); loss_auxi = np.average(auxi_losses)
             loss_reg = np.average(reg_losses); loss_decorr = np.average(decorr_losses)
             vali_loss = self.vali(vali_data, vali_loader, criterion)
 

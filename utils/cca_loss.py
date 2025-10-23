@@ -105,12 +105,13 @@ def cal_corr_cosine(X, Y, rank_ratio=1.0, r1=1e-3, r2=1e-3, eps=1e-9, device='cp
 
 
 def cal_corr_pearson(X, Y, rank_ratio=1.0, r1=1e-3, r2=1e-3, eps=1e-9, device='cpu', n_retry=3):
-    X_centered = X - X.mean(dim=1, keepdim=True)
-    Y_centered = Y - Y.mean(dim=1, keepdim=True)
-    covariance = (X_centered * Y_centered).mean(dim=1)
-    X_std = X_centered.std(dim=1)
-    Y_std = Y_centered.std(dim=1)
-    corr = covariance / (X_std * Y_std + eps)  # [B]
+    X_centered = X - X.mean(dim=0, keepdim=True)
+    Y_centered = Y - Y.mean(dim=0, keepdim=True)
+    X_std = X_centered.std(dim=0)
+    Y_std = Y_centered.std(dim=0)
+    Xn = X_centered / (X_std + eps)
+    Yn = Y_centered / (Y_std + eps)
+    corr = (Xn * Yn).mean(dim=0)
     corr = corr.mean()
     return -corr
 
@@ -214,36 +215,31 @@ def cca_loss(X, Y, align_type=1, rank_ratio=1.0, device='cpu', r1=1e-3, r2=1e-3,
     return loss
 
 
-
 def channel_decorrelation_loss(X, eps=1e-8, p=1):
     """
-    计算时序数据各通道间相关性的去相关loss。
-
-    Args:
-        X: [B, T, D]，B为batch，T为时间步，D为通道数
-        eps: 防止除0
-        p: 1为L1范数（绝对值），2为L2范数（平方）
-
-    Returns:
-        loss: 所有通道两两间相关系数的均值（L1或L2）
+    X: [B, T, D]  (float32/float64)
     """
     B, T, D = X.shape
-    X_flat = X.reshape(-1, D)  # [B*T, D]
-    # 中心化
-    X_centered = X_flat - X_flat.mean(dim=0, keepdim=True)  # [B*T, D]
-    # 标准化
-    X_std = X_centered.std(dim=0, keepdim=True) + eps       # [1, D]
-    X_norm = X_centered / X_std                             # [B*T, D]
-    # 相关系数矩阵 [D, D]
-    corr_matrix = (X_norm.T @ X_norm) / (B * T - 1)
-    # 忽略对角线，只统计通道间相关性
-    off_diag_mask = ~torch.eye(D, dtype=torch.bool, device=X.device)
-    off_diag_corr = corr_matrix[off_diag_mask]  # [D*D-D]
-    # L1或L2范数
+    # 1️⃣ flatten & center
+    X_flat = X.reshape(-1, D)                     # (B*T, D)
+    X_centered = X_flat - X_flat.mean(dim=0, keepdim=True)
+
+    # 2️⃣ standardize (avoid division by zero)
+    std = X_centered.std(dim=0, unbiased=False, keepdim=True)
+    X_norm = X_centered / (std + eps)
+
+    # 3️⃣ correlation matrix (batch‑wise)
+    #    使用 einsum 可避免显式使用 B*T 作为除数
+    corr = X_norm.t() @ X_norm / (B * T - 1)
+
+    # 4️⃣ mask out diagonal
+    off_diag = corr[~torch.eye(D, dtype=torch.bool, device=X.device)]
+
+    # 5️⃣ loss (L1/L2)
     if p == 1:
-        loss = off_diag_corr.abs().mean()
+        loss = off_diag.abs().mean()
     elif p == 2:
-        loss = off_diag_corr.pow(2).mean()
+        loss = (off_diag ** 2).mean()
     else:
-        raise ValueError("p must be 1 or 2.")
+        raise ValueError("p must be 1 or 2")
     return loss

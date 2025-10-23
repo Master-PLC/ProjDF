@@ -268,7 +268,7 @@ class Dataset_ETT_hour_CCA(Dataset_ETT_hour):
             if self.align_type not in [5, 7]:
                 input_seq, label_seq = [], []
                 for i in range(self.__len__()):
-                    inp, label, _, _ = self.__getitem__(i)
+                    inp, label, _, _, _ = self.__getitem__(i)
                     input_seq.append(inp)
                     label = label[-self.pred_len:]
                     label_seq.append(label)
@@ -494,7 +494,7 @@ class Dataset_ETT_minute_CCA(Dataset_ETT_minute):
             if self.align_type not in [5, 7]:
                 input_seq, label_seq = [], []
                 for i in range(self.__len__()):
-                    inp, label, _, _ = self.__getitem__(i)
+                    inp, label, _, _, _ = self.__getitem__(i)
                     input_seq.append(inp)
                     label = label[-self.pred_len:]
                     label_seq.append(label)
@@ -927,7 +927,7 @@ class Dataset_Custom_CCA(Dataset_Custom):
             if self.align_type not in [5, 7]:
                 input_seq, label_seq = [], []
                 for i in range(self.__len__()):
-                    inp, label, _, _ = self.__getitem__(i)
+                    inp, label, _, _, _ = self.__getitem__(i)
                     input_seq.append(inp)
                     label = label[-self.pred_len:]
                     label_seq.append(label)
@@ -1187,7 +1187,7 @@ class Dataset_PEMS_CCA(Dataset_PEMS):
             if self.align_type not in [5, 7]:
                 input_seq, label_seq = [], []
                 for i in range(self.__len__()):
-                    inp, label, _, _ = self.__getitem__(i)
+                    inp, label, _, _, _ = self.__getitem__(i)
                     input_seq.append(inp)
                     label = label[-self.pred_len:]
                     label_seq.append(label)
@@ -1461,7 +1461,7 @@ class Dataset_M4_CCA(Dataset_M4):
             assert self.align_type != 5, "M4 dataset does not support align_type=5"
             input_seq, label_seq = [], []
             for i in range(self.__len__()):
-                inp, label, _, _ = self.__getitem__(i)
+                inp, label, _, _, _ = self.__getitem__(i)
                 input_seq.append(inp)
                 label = label[-self.pred_len:]
                 label_seq.append(label)
