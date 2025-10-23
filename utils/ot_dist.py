@@ -101,10 +101,12 @@ def emd_loss_1d_batched_align_t(pred, target, dist_scale=0.1, eps=1e-4, device='
 
     # align positive part of target
     posi, posj = torch.where(target >= 0)
-    emd_p = emd_1d_batched_align_t(pred, target, posi, posj, dist_scale=dist_scale, eps=eps, device=device) if len(posi) > 0 else 0.
+    emd_p = emd_1d_batched_align_t(pred, target, posi, posj, dist_scale=dist_scale, eps=eps, device=device)
+    emd_p = emd_p.mean() if len(posi) > 0 else 0.
 
     negi, negj = torch.where(target < 0)
-    emd_n = emd_1d_batched_align_t(pred, target, negi, negj, invert=True, dist_scale=dist_scale, eps=eps, device=device) if len(negi) > 0 else 0.
+    emd_n = emd_1d_batched_align_t(pred, target, negi, negj, invert=True, dist_scale=dist_scale, eps=eps, device=device)
+    emd_n = emd_n.mean() if len(negi) > 0 else 0.
 
     return emd_p + emd_n
 
@@ -128,10 +130,12 @@ def emd_loss_1d_batched_align_h(pred, target, dist_scale=0.1, eps=1e-4, device='
     tp = torch.clamp(target, min=0.)
     pp = torch.clamp(pred, min=0.)
     emd_p = emd_1d_batched_align_h(tp, pp, dist_scale=dist_scale, eps=eps, device=device)
+    emd_p = emd_p.mean()
 
     tn = torch.clamp(-target, min=0.)
     pn = torch.clamp(-pred, min=0.)
     emd_n = emd_1d_batched_align_h(tn, pn, dist_scale=dist_scale, eps=eps, device=device)
+    emd_n = emd_n.mean()
 
     return emd_p + emd_n
 
@@ -147,6 +151,7 @@ def emd_loss_1d_batched_align_all(pred, target, dist_scale=0.1, eps=1e-4, device
     seq = torch.arange(T).reshape(-1, 1).float().repeat(1, B * D).to(device).requires_grad_(True)  # shape [T, S]
     emd = ot.wasserstein_1d(seq, seq, pred.T, target.T, p=1, require_sort=False)
     emd = emd / (T - 1) * dist_scale
+    emd = emd.mean()
     return emd
 
 

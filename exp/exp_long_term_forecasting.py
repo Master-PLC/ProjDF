@@ -236,7 +236,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                             raise NotImplementedError
 
                     elif self.args.auxi_mode == "ot":
-                        kwargs = {'dist_scale': self.args.dist_scale, 'device': self.device}
+                        kwargs = {'dist_scale': self.args.dist_scale, 'device': self.device, 'eps': self.args.eps}
                         if self.args.auxi_type == "emd1d_t":
                             loss_auxi = emd_loss_1d_batched_align_t(outputs, batch_y, **kwargs)
                         elif self.args.auxi_type == "emd1d_h":
