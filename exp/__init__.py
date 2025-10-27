@@ -8,6 +8,7 @@ from .exp_long_term_forecasting_meta_imaml import Exp_Long_Term_Forecast_META_iM
 from .exp_long_term_forecasting_meta_ml3 import Exp_Long_Term_Forecast_META_ML3
 from .exp_long_term_forecasting_ot import Exp_Long_Term_Forecast_OT
 from .exp_short_term_forecasting import Exp_Short_Term_Forecast
+from .exp_long_term_forecasting_gan import Exp_Long_Term_Forecast_GAN
 
 EXP_DICT = {
     'long_term_forecast': Exp_Long_Term_Forecast,
@@ -20,4 +21,5 @@ EXP_DICT = {
     'long_term_forecast_meta_ml3': Exp_Long_Term_Forecast_META_ML3,
     'long_term_forecast_ot': Exp_Long_Term_Forecast_OT,
     'long_term_forecast_cca_loss': Exp_Long_Term_Forecast_CCA_Loss,
+    'long_term_forecast_gan': Exp_Long_Term_Forecast_GAN
 }

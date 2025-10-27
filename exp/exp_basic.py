@@ -82,6 +82,8 @@ class Exp_Basic(object):
             optim_class = optim.AdamW
         elif optim_type == 'sgd':
             optim_class = optim.SGD
+        elif optim_type == 'rmsprop':
+            optim_class = optim.RMSprop
         model_optim = optim_class(model.parameters(), lr=lr)
         return model_optim
 
@@ -94,6 +96,8 @@ class Exp_Basic(object):
             criterion = nn.L1Loss()
         elif loss_type == 'huber':
             criterion = nn.SmoothL1Loss()
+        elif loss_type == 'bce':
+            criterion = nn.BCEWithLogitsLoss()
         else:
             criterion = loss_type
         return criterion

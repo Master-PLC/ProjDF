@@ -78,9 +78,9 @@ def adjust_learning_rate_only(epoch, args, init_lr=None):
 
 
 class Scheduler:
-    def __init__(self, optimizer, args, train_steps, fixed_epoch=None):
+    def __init__(self, optimizer, args, train_steps, fixed_epoch=None, lradj=None):
         self.optimizer = optimizer
-        self.scheduler_type = args.lradj
+        self.scheduler_type = args.lradj if lradj is None else lradj
 
         self.step_size = args.step_size
         self.lr_decay = args.lr_decay

@@ -119,7 +119,7 @@ if __name__ == '__main__':
     parser.add_argument('--lr_decay', type=float, default=0.5, help='decay rate for learning rate')
     parser.add_argument('--min_lr', type=float, default=1e-6, help='minimum learning rate')
     parser.add_argument('--mode', type=int, default=0, help='mode for learning rate decay')
-    parser.add_argument('--use_amp', action='store_true', help='use automatic mixed precision training', default=False)
+    parser.add_argument('--use_amp', type=int, help='use automatic mixed precision training', default=0)
     parser.add_argument('--pct_start', type=float, default=0.2, help='Warmup ratio for the learning rate scheduler')
 
     # FreDF
@@ -239,6 +239,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_tasks', type=int, default=5, help='number of tasks')
     parser.add_argument('--overlap_ratio', type=float, default=0.15, help='overlap ratio between tasks')
     parser.add_argument('--meta_optim_type', type=str, default='sgd', help='optimizer type')
+    parser.add_argument('--meta_loss', type=str, default='bce', help='loss function')
     parser.add_argument('--max_norm', type=float, default=1.0, help='max norm for gradient clipping')
     parser.add_argument('--first_order', type=int, default=1, help='first order approximation; True 1 False 0')
     parser.add_argument('--model_per_task', type=int, default=0, help='separate model for each task; True 1 False 0')
@@ -276,6 +277,10 @@ if __name__ == '__main__':
     # xPatch
     parser.add_argument('--ma_type', type=str, default='ema', help='reg, ema, dema')
     parser.add_argument('--beta', type=float, default=0.3, help='beta')
+
+    # AST
+    parser.add_argument('--ind_discr', type=int, default=0, help='ind_discr')
+    parser.add_argument('--view_lambda', type=float, default=0.1, help='view_lambda')
 
     args = parser.parse_args()
 
