@@ -35,6 +35,7 @@ if __name__ == '__main__':
     parser.add_argument('--log_step', type=int, default=10, help='log step')
     parser.add_argument('--output_pred', action='store_true', help='output true and pred', default=False)
     parser.add_argument('--output_vis', action='store_true', help='output visual figures', default=False)
+    parser.add_argument('--report_to', type=str, default='None', help='report to tensorboard or None')
 
     # data loader
     parser.add_argument('--data_id', type=str, default='ETTm1', help='dataset name')

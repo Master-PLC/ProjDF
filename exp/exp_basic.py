@@ -25,6 +25,7 @@ class Exp_Basic(object):
 
         self.output_pred = args.output_pred
         self.output_vis = args.output_vis
+        self.report_to = args.report_to
 
     def _build_model(self, args=None):
         args = self.args if args is None else args
