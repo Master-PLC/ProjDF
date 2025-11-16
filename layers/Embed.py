@@ -27,6 +27,14 @@ class PositionalEmbedding(nn.Module):
         return self.pe[:, :x.size(1)]
 
 
+class PositionalEmbedding_scale(PositionalEmbedding):
+    def __init__(self, d_model, max_len=5000):
+        super(PositionalEmbedding_scale, self).__init__(d_model, max_len)
+
+    def forward(self, x, scale=1):
+        return self.pe[:, scale:x.size(1)*scale+1:scale]
+
+
 class TokenEmbedding(nn.Module):
     def __init__(self, c_in, d_model):
         super(TokenEmbedding, self).__init__()
@@ -107,6 +115,21 @@ class TimeFeatureEmbedding(nn.Module):
         return self.embed(x)
 
 
+class TimeFeatureEmbedding_scale(TimeFeatureEmbedding):
+    def __init__(self, d_model, embed_type='timeF', freq='h'):
+        super(TimeFeatureEmbedding_scale, self).__init__(d_model, embed_type, freq)
+        self.concats = dict()
+
+    def forward(self, x, scale=1):
+        if (scale, x.shape[0], x.shape[1]) not in self.concats:
+            concat_tensor = torch.tensor([[[1/scale-0.5]]]).cuda().repeat(x.shape[0],x.shape[1],1)
+            self.concats[(scale, x.shape[0], x.shape[1])] = concat_tensor
+        else:
+            concat_tensor = self.concats[(scale, x.shape[0], x.shape[1])]
+        x = torch.cat((x, concat_tensor), 2)
+        return self.embed(x)
+
+
 class DataEmbedding(nn.Module):
     def __init__(self, c_in, d_model, embed_type='fixed', freq='h', dropout=0.1):
         super(DataEmbedding, self).__init__()
@@ -162,6 +185,33 @@ class DataEmbedding_wo_pos(nn.Module):
             x = self.value_embedding(x)
         else:
             x = self.value_embedding(x) + self.temporal_embedding(x_mark)
+        return self.dropout(x)
+
+
+class DataEmbedding_scale(nn.Module):
+    def __init__(self, c_in, d_model, embed_type='fixed', freq='h', dropout=0.1, is_decoder=False):
+        super(DataEmbedding_scale, self).__init__()
+        if is_decoder:
+            c_in += 1
+        self.value_embedding = TokenEmbedding(c_in=c_in, d_model=d_model)
+        self.position_embedding = PositionalEmbedding_scale(d_model=d_model)
+        self.temporal_embedding = TimeFeatureEmbedding_scale(d_model=d_model, embed_type=embed_type, freq=freq)
+        self.dropout = nn.Dropout(p=dropout)
+        self.is_decoder = is_decoder
+
+    def forward(self, x, x_mark, scale, first_scale, label_len):
+        if self.is_decoder:
+            x = torch.cat((x, torch.ones((x.shape[0], x.shape[1], 1), device=x.device)), dim=2)
+            if scale==first_scale:
+                x[:,:label_len//scale,-1] = 0
+                x[:,label_len//scale:,-1] = 0.5
+            else:
+                x[:,:label_len//scale,-1] = 0
+                x[:,label_len//scale:,-1] = 1
+        vembed = self.value_embedding(x)
+        pembed = self.position_embedding(x, scale)
+        tembed = self.temporal_embedding(x_mark, scale)
+        x = vembed + pembed + tembed
         return self.dropout(x)
 
 
