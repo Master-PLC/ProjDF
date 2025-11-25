@@ -1,0 +1,141 @@
+data_id,pred_len,auxi_mode,mse,mae,exp_dir
+ETTm1,96,DF,0.3263689875602722,0.360869437456131,/data/home/Licheng/workspace/TSF-PCA/results_PCA/baselines/Fredformer_ETTm1_96_1.0_0.0_0.0001_TST_100_10_128_128_2_8_96_32
+ETTm1,192,DF,0.3651944398880005,0.3821316659450531,/data/home/Licheng/workspace/TSF-PCA/results_PCA/baselines/Fredformer_ETTm1_192_1.0_0.0_0.0001_TST_100_10_128_128_2_8_96_32
+ETTm1,336,DF,0.3959866464138031,0.4043689668178558,/data/home/Licheng/workspace/TSF-PCA/results_PCA/baselines/Fredformer_ETTm1_336_1.0_0.0_0.0001_TST_100_10_128_128_2_8_96_32
+ETTm1,720,DF,0.4592172801494598,0.4443422257900238,/data/home/Licheng/workspace/TSF-PCA/results_PCA/baselines/Fredformer_ETTm1_720_1.0_0.0_0.0001_TST_100_10_128_164_2_8_96_32
+ETTm1,Avg,DF,0.3866918385028839,0.39792807400226593,
+ETTm1,96,Time-o1,0.3211379945278168,0.3574359118938446,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_PCA_96_0.6_0.4_0.0005_TST_100_10_128_128_2_8_96_32_MAE_0_1_T_1.0
+ETTm1,192,Time-o1,0.3595805168151855,0.3781188428401947,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_PCA_192_0.2_0.8_0.0005_TST_100_10_128_128_2_8_96_32_MAE_0_1_T_1.0
+ETTm1,336,Time-o1,0.3892384767532348,0.3999874293804168,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_PCA_336_0.1_0.9_0.0005_TST_100_10_128_128_2_8_96_32_MAE_0_1_T_0.7
+ETTm1,720,Time-o1,0.4470203816890716,0.4348906874656677,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_PCA_720_0.0_1.0_0.0005_TST_100_10_128_164_2_8_96_32_MAE_0_1_T_0.8
+ETTm1,Avg,Time-o1,0.37924434244632715,0.392608217895031,
+ETTm1,96,FreDF,0.32634541392326355,0.35460442304611206,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_96_0.2_0.8_0.0005_TST_100_10_128_MAE_rfft
+ETTm1,192,FreDF,0.36332499980926514,0.3799927234649658,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_192_0.2_0.8_0.0005_TST_100_10_128_MAE_rfft
+ETTm1,336,FreDF,0.39205029606819153,0.39972183108329773,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_336_0.2_0.8_0.0005_TST_100_10_128_MAE_rfft
+ETTm1,720,FreDF,0.4545423090457916,0.4398916959762573,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_720_0.2_0.8_0.0005_TST_100_10_128_MAE_rfft
+ETTm1,Avg,FreDF,0.38406575471162796,0.39355266839265823,
+ETTm1,96,Fourier Koopman,0.33529624342918396,0.36795905232429504,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_96_0.2_0.8_0.0005_TST_100_10_128_None_fourier_koopman
+ETTm1,192,Fourier Koopman,0.36578452587127686,0.3842400312423706,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_192_0.2_0.8_0.0005_TST_100_10_128_None_fourier_koopman
+ETTm1,336,Fourier Koopman,0.3987613916397095,0.4083792567253113,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_336_0.2_0.8_0.0005_TST_100_10_128_None_fourier_koopman
+ETTm1,720,Fourier Koopman,0.4560664892196655,0.44115880131721497,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_720_0.2_0.8_0.0005_TST_100_10_128_None_fourier_koopman
+ETTm1,Avg,Fourier Koopman,0.38897716253995895,0.400434285402298,
+ETTm1,96,Dilate,0.33654171228408813,0.36688944697380066,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_96_0.9995_0.0005_0.0005_TST_100_10_128_None_dilate_cuda
+ETTm1,192,Dilate,0.3635519742965698,0.38358476758003235,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_192_0.9995_0.0005_0.0005_TST_100_10_128_None_dilate_cuda
+ETTm1,336,Dilate,0.39710476994514465,0.40578922629356384,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_336_0.9995_0.0005_0.0005_TST_100_10_128_None_dilate_cuda
+ETTm1,720,Dilate,0.45689311623573303,0.44293901324272156,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_720_0.9995_0.0005_0.0005_TST_100_10_128_None_dilate_cuda
+ETTm1,Avg,Dilate,0.3885228931903839,0.3998006135225296,
+ETTm1,96,Soft-DTW,0.3320269286632538,0.36338120698928833,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_96_0.9995_0.0005_0.0005_TST_100_10_128_None_soft_dtw
+ETTm1,192,Soft-DTW,0.37016206979751587,0.3859206736087799,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_192_0.9995_0.0005_0.0005_TST_100_10_128_None_soft_dtw
+ETTm1,336,Soft-DTW,0.4064127206802368,0.4088272750377655,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_336_0.9995_0.0005_0.0005_TST_100_10_128_None_soft_dtw
+ETTm1,720,Soft-DTW,0.478230357170105,0.4496065378189087,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_720_0.9995_0.0005_0.0005_TST_100_10_128_None_soft_dtw
+ETTm1,Avg,Soft-DTW,0.39670801907777786,0.4019339233636856,
+ETTm1,96,DTW,0.33182862401008606,0.3642325699329376,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_96_0.9995_0.0005_0.0005_TST_100_10_128_None_dtw
+ETTm1,192,DTW,0.3695293962955475,0.3864043951034546,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_192_0.9995_0.0005_0.0005_TST_100_10_128_None_dtw
+ETTm1,336,DTW,0.4086475968360901,0.4104112982749939,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_336_0.9995_0.0005_0.0005_TST_100_10_128_None_dtw
+ETTm1,720,DTW,0.4758516252040863,0.44843336939811707,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTm1_720_0.9995_0.0005_0.0005_TST_100_10_128_None_dtw
+ETTm1,Avg,DTW,0.3964643105864525,0.4023704081773758,
+ETTh1,96,DF,0.3771934807300567,0.3958878517150879,/data/home/Licheng/workspace/TSF-PCA/results_PCA/baselines/Fredformer_ETTh1_96_1.0_0.0_0.0001_type3_100_10_128_128_2_8_96_32
+ETTh1,192,DF,0.4370187819004059,0.42538982629776,/data/home/Licheng/workspace/TSF-PCA/results_PCA/baselines/Fredformer_ETTh1_192_1.0_0.0_0.0001_type3_100_10_128_128_2_8_96_32
+ETTh1,336,DF,0.4857693314552307,0.4485799074172973,/data/home/Licheng/workspace/TSF-PCA/results_PCA/baselines/Fredformer_ETTh1_336_1.0_0.0_0.0001_type3_100_10_128_128_2_8_96_32
+ETTh1,720,DF,0.487772136926651,0.4673515260219574,/data/home/Licheng/workspace/TSF-PCA/results_PCA/baselines/Fredformer_ETTh1_720_1.0_0.0_0.0001_type3_100_10_128_128_2_8_96_32
+ETTh1,Avg,DF,0.4469384327530861,0.43430227786302567,
+ETTh1,96,Time-o1,0.3680025041103363,0.3907652497291565,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_PCA_96_0.0_1.0_0.0005_type3_100_10_128_128_2_8_96_32_MAE_0_1_T_1.0
+ETTh1,192,Time-o1,0.4240888655185699,0.4219553470611572,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_PCA_192_0.0_1.0_0.0005_type3_100_10_128_128_2_8_96_32_MAE_0_1_T_1.0
+ETTh1,336,Time-o1,0.4669598639011383,0.4413564503192901,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_PCA_336_0.0_1.0_0.0005_type3_100_10_128_128_2_8_96_32_MAE_0_1_T_1.0
+ETTh1,720,Time-o1,0.4649324715137481,0.4631440937519073,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_PCA_720_0.0_1.0_0.0005_type3_100_10_128_128_2_8_96_32_MAE_0_1_T_0.9
+ETTh1,Avg,Time-o1,0.4309959262609482,0.4293052852153778,
+ETTh1,96,FreDF,0.36970627307891846,0.3915591835975647,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_96_0.2_0.8_0.001_type3_100_10_128_MAE_rfft
+ETTh1,192,FreDF,0.4355933964252472,0.4365418255329132,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_192_0.2_0.8_0.001_type3_100_10_128_MAE_rfft
+ETTh1,336,FreDF,0.4729723036289215,0.4428349733352661,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_336_0.2_0.8_0.001_type3_100_10_128_MAE_rfft
+ETTh1,720,FreDF,0.4741019010543823,0.46584537625312805,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_720_0.2_0.8_0.001_type3_100_10_128_MAE_rfft
+ETTh1,Avg,FreDF,0.43809346854686737,0.434195339679718,
+ETTh1,96,Fourier Koopman,0.3747584819793701,0.3973237872123718,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_96_0.2_0.8_0.001_type3_100_10_128_None_fourier_koopman
+ETTh1,192,Fourier Koopman,0.4378664791584015,0.4336797893047333,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_192_0.2_0.8_0.001_type3_100_10_128_None_fourier_koopman
+ETTh1,336,Fourier Koopman,0.47303107380867004,0.4554176926612854,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_336_0.2_0.8_0.001_type3_100_10_128_None_fourier_koopman
+ETTh1,720,Fourier Koopman,0.5228999257087708,0.4870637357234955,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_720_0.2_0.8_0.001_type3_100_10_128_None_fourier_koopman
+ETTh1,Avg,Fourier Koopman,0.4521389901638031,0.4433712512254715,
+ETTh1,96,Dilate,0.3777253329753876,0.3987542986869812,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_96_0.9995_0.0005_0.001_type3_100_10_128_None_dilate_cuda
+ETTh1,192,Dilate,0.4390365779399872,0.4347802400588989,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_192_0.9995_0.0005_0.001_type3_100_10_128_None_dilate_cuda
+ETTh1,336,Dilate,0.48058101534843445,0.45251724123954773,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_336_0.9995_0.0005_0.001_type3_100_10_128_None_dilate_cuda
+ETTh1,720,Dilate,0.5159295797348022,0.4821101725101471,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_720_0.9995_0.0005_0.001_type3_100_10_128_None_dilate_cuda
+ETTh1,Avg,Dilate,0.45331812649965286,0.44204048812389374,
+ETTh1,96,Soft-DTW,0.37580737471580505,0.3976632356643677,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_96_0.9995_0.0005_0.001_type3_100_10_128_None_soft_dtw
+ETTh1,192,Soft-DTW,0.43946075439453125,0.4350711703300476,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_192_0.9995_0.0005_0.001_type3_100_10_128_None_soft_dtw
+ETTh1,336,Soft-DTW,0.48439404368400574,0.45468446612358093,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_336_0.9995_0.0005_0.001_type3_100_10_128_None_soft_dtw
+ETTh1,720,Soft-DTW,0.5416573882102966,0.5102411508560181,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_720_0.9995_0.0005_0.001_type3_100_10_128_None_soft_dtw
+ETTh1,Avg,Soft-DTW,0.46032989025115967,0.44941500574350357,
+ETTh1,96,DTW,0.37769073247909546,0.39851173758506775,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_96_0.9995_0.0005_0.001_type3_100_10_128_None_dtw
+ETTh1,192,DTW,0.43764105439186096,0.4333084225654602,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_192_0.9995_0.0005_0.001_type3_100_10_128_None_dtw
+ETTh1,336,DTW,0.4860396087169647,0.45465537905693054,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_336_0.9995_0.0005_0.001_type3_100_10_128_None_dtw
+ETTh1,720,DTW,0.5380672216415405,0.5099091529846191,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ETTh1_720_0.9995_0.0005_0.001_type3_100_10_128_None_dtw
+ETTh1,Avg,DTW,0.4598596543073654,0.4490961730480194,
+ECL,96,DF,0.1610181480646133,0.2575914561748504,/data/home/Licheng/workspace/TSF-PCA/results_PCA/baselines/Fredformer_ECL_96_1.0_0.0_0.01_TST_100_5_32_640_3_8_640_32
+ECL,192,DF,0.1735854893922805,0.2694698274135589,/data/home/Licheng/workspace/TSF-PCA/results_PCA/baselines/Fredformer_ECL_192_1.0_0.0_0.01_TST_100_5_32_640_3_8_640_32
+ECL,336,DF,0.1941081583499908,0.2903970777988434,/data/home/Licheng/workspace/TSF-PCA/results_PCA/baselines/Fredformer_ECL_336_1.0_0.0_0.01_TST_100_5_32_640_3_8_640_32
+ECL,720,DF,0.2346724569797516,0.3193843066692352,/data/home/Licheng/workspace/TSF-PCA/results_PCA/baselines/Fredformer_ECL_720_1.0_0.0_0.01_TST_100_5_32_640_3_8_640_32
+ECL,Avg,DF,0.19084606319665903,0.28421066701412195,
+ECL,96,Time-o1,0.1511508077383041,0.2447965443134308,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_PCA_96_0.2_0.8_0.005_TST_100_5_32_640_3_8_640_32_MAE_0_1_T_0.8
+ECL,192,Time-o1,0.165649265050888,0.2563000917434692,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_PCA_192_0.0_1.0_0.005_TST_100_5_32_640_3_8_640_32_MAE_0_1_T_1.0
+ECL,336,Time-o1,0.1810963749885559,0.2742898166179657,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_PCA_336_0.2_0.8_0.005_TST_100_5_32_640_3_8_640_32_MAE_0_1_T_0.6
+ECL,720,Time-o1,0.2131546735763549,0.3040794432163238,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_PCA_720_0.0_1.0_0.005_TST_100_5_32_640_3_8_640_32_MAE_0_1_T_0.6
+ECL,Avg,Time-o1,0.17776278033852572,0.2698664739727974,
+ECL,96,FreDF,0.152476504445076,0.24714890122413635,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_96_0.2_0.8_0.005_TST_100_5_32_MAE_rfft
+ECL,192,FreDF,0.1662038117647171,0.25718382000923157,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_192_0.2_0.8_0.005_TST_100_5_32_MAE_rfft
+ECL,336,FreDF,0.18287095427513123,0.277835488319397,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_336_0.2_0.8_0.005_TST_100_5_32_MAE_rfft
+ECL,720,FreDF,0.21638022363185883,0.30436116456985474,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_720_0.2_0.8_0.005_TST_100_5_32_MAE_rfft
+ECL,Avg,FreDF,0.17948287352919579,0.2716323435306549,
+ECL,96,Fourier Koopman,0.1655011922121048,0.26315730810165405,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_96_0.2_0.8_0.005_TST_100_5_32_None_fourier_koopman
+ECL,192,Fourier Koopman,0.17370064556598663,0.26687905192375183,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_192_0.2_0.8_0.005_TST_100_5_32_None_fourier_koopman
+ECL,336,Fourier Koopman,0.18750976026058197,0.28045448660850525,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_336_0.2_0.8_0.005_TST_100_5_32_None_fourier_koopman
+ECL,720,Fourier Koopman,0.23175939917564392,0.3178021311759949,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_720_0.2_0.8_0.005_TST_100_5_32_None_fourier_koopman
+ECL,Avg,Fourier Koopman,0.18961774930357933,0.2820732444524765,
+ECL,96,Dilate,0.15822133421897888,0.2534371614456177,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_96_0.9995_0.0005_0.005_TST_100_5_32_None_dilate_cuda
+ECL,192,Dilate,0.17028088867664337,0.2633451223373413,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_192_0.9995_0.0005_0.005_TST_100_5_32_None_dilate_cuda
+ECL,336,Dilate,0.19035138189792633,0.28552091121673584,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_336_0.9995_0.0005_0.005_TST_100_5_32_None_dilate_cuda
+ECL,720,Dilate,0.22918565571308136,0.316375732421875,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_720_0.9995_0.0005_0.005_TST_100_5_32_None_dilate_cuda
+ECL,Avg,Dilate,0.18700981512665749,0.27966973185539246,
+ECL,96,Soft-DTW,0.1679222285747528,0.2658578157424927,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_96_0.9995_0.0005_0.005_TST_100_5_32_None_soft_dtw
+ECL,192,Soft-DTW,0.21824198961257935,0.31265369057655334,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_192_0.9995_0.0005_0.005_TST_100_5_32_None_soft_dtw
+ECL,336,Soft-DTW,0.1972021907567978,0.2909102737903595,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_336_0.9995_0.0005_0.005_TST_100_5_32_None_soft_dtw
+ECL,720,Soft-DTW,0.2398003488779068,0.32163041830062866,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_720_0.9995_0.0005_0.005_TST_100_5_32_None_soft_dtw
+ECL,Avg,Soft-DTW,0.20579168945550919,0.29776304960250854,
+ECL,96,DTW,0.15764255821704865,0.25282612442970276,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_96_0.9995_0.0005_0.005_TST_100_5_32_None_dtw
+ECL,192,DTW,0.21550889313220978,0.30728694796562195,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_192_0.9995_0.0005_0.005_TST_100_5_32_None_dtw
+ECL,336,DTW,0.19889439642429352,0.29475662112236023,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_336_0.9995_0.0005_0.005_TST_100_5_32_None_dtw
+ECL,720,DTW,0.23498667776584625,0.3221052289009094,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_ECL_720_0.9995_0.0005_0.005_TST_100_5_32_None_dtw
+ECL,Avg,DTW,0.20175813138484955,0.2942437306046486,
+Weather,96,DF,0.1801917850971222,0.2197628319263458,/data/home/Licheng/workspace/TSF-PCA/results_PCA/baselines/Fredformer_Weather_96_1.0_0.0_0.001_type3_100_5_128_32_3_8_32_8
+Weather,192,DF,0.2223790735006332,0.2576284408569336,/data/home/Licheng/workspace/TSF-PCA/results_PCA/baselines/Fredformer_Weather_192_1.0_0.0_0.001_type3_100_5_128_32_3_8_32_8
+Weather,336,DF,0.2834919393062591,0.3009756207466125,/data/home/Licheng/workspace/TSF-PCA/results_PCA/baselines/Fredformer_Weather_336_1.0_0.0_0.001_type3_100_5_128_16_3_8_32_8
+Weather,720,DF,0.3576559126377105,0.3484996855258941,/data/home/Licheng/workspace/TSF-PCA/results_PCA/baselines/Fredformer_Weather_720_1.0_0.0_0.001_type3_100_5_128_16_3_8_32_8
+Weather,Avg,DF,0.26092967763543123,0.28171664476394653,
+Weather,96,Time-o1,0.1712098568677902,0.2082905322313308,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_PCA_96_0.0_1.0_0.001_type3_100_5_128_32_3_8_32_8_MAE_0_1_T_0.6
+Weather,192,Time-o1,0.2194599211215973,0.2528133392333984,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_PCA_192_0.0_1.0_0.001_type3_100_5_128_32_3_8_32_8_MAE_0_1_T_1.0
+Weather,336,Time-o1,0.2767519950866699,0.2953278720378876,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_PCA_336_0.0_1.0_0.001_type3_100_5_128_16_3_8_32_8_MAE_0_1_T_0.6
+Weather,720,Time-o1,0.3532553315162658,0.3463561832904815,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_PCA_720_0.0_1.0_0.001_type3_100_5_128_16_3_8_32_8_MAE_0_1_T_1.0
+Weather,Avg,Time-o1,0.2551692761480808,0.27569698169827456,
+Weather,96,FreDF,0.1737947165966034,0.2129564881324768,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_96_0.2_0.8_0.001_type3_100_5_128_MAE_rfft
+Weather,192,FreDF,0.21949446201324463,0.25372105836868286,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_192_0.2_0.8_0.001_type3_100_5_128_MAE_rfft
+Weather,336,FreDF,0.2780168354511261,0.2960929274559021,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_336_0.2_0.8_0.001_type3_100_5_128_MAE_rfft
+Weather,720,FreDF,0.35353052616119385,0.34654340147972107,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_720_0.2_0.8_0.001_type3_100_5_128_MAE_rfft
+Weather,Avg,FreDF,0.256209135055542,0.2773284688591957,
+Weather,96,Fourier Koopman,0.17379815876483917,0.2141699194908142,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_96_0.2_0.8_0.001_type3_100_5_128_None_fourier_koopman
+Weather,192,Fourier Koopman,0.22021006047725677,0.25595903396606445,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_192_0.2_0.8_0.001_type3_100_5_128_None_fourier_koopman
+Weather,336,Fourier Koopman,0.2795639634132385,0.2983715236186981,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_336_0.2_0.8_0.001_type3_100_5_128_None_fourier_koopman
+Weather,720,Fourier Koopman,0.354267418384552,0.3474096357822418,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_720_0.2_0.8_0.001_type3_100_5_128_None_fourier_koopman
+Weather,Avg,Fourier Koopman,0.2569599002599716,0.27897752821445465,
+Weather,96,Dilate,0.1729109287261963,0.21365337073802948,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_96_0.9995_0.0005_0.001_type3_100_5_128_None_dilate_cuda
+Weather,192,Dilate,0.2253478467464447,0.25952115654945374,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_192_0.9995_0.0005_0.001_type3_100_5_128_None_dilate_cuda
+Weather,336,Dilate,0.27950048446655273,0.2989141047000885,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_336_0.9995_0.0005_0.001_type3_100_5_128_None_dilate_cuda
+Weather,720,Dilate,0.35527122020721436,0.34788861870765686,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_720_0.9995_0.0005_0.001_type3_100_5_128_None_dilate_cuda
+Weather,Avg,Dilate,0.258257620036602,0.27999431267380714,
+Weather,96,Soft-DTW,0.17343652248382568,0.21262948215007782,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_96_0.9995_0.0005_0.001_type3_100_5_128_None_soft_dtw
+Weather,192,Soft-DTW,0.2203643023967743,0.2546378970146179,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_192_0.9995_0.0005_0.001_type3_100_5_128_None_soft_dtw
+Weather,336,Soft-DTW,0.2810061275959015,0.2962232530117035,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_336_0.9995_0.0005_0.001_type3_100_5_128_None_soft_dtw
+Weather,720,Soft-DTW,0.36944347620010376,0.35527363419532776,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_720_0.9995_0.0005_0.001_type3_100_5_128_None_soft_dtw
+Weather,Avg,Soft-DTW,0.2610626071691513,0.27969106659293175,
+Weather,96,DTW,0.1789347231388092,0.2189924120903015,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_96_0.9995_0.0005_0.001_type3_100_5_128_None_dtw
+Weather,192,DTW,0.22285906970500946,0.25665202736854553,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_192_0.9995_0.0005_0.001_type3_100_5_128_None_dtw
+Weather,336,DTW,0.2811080813407898,0.2975822985172272,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_336_0.9995_0.0005_0.001_type3_100_5_128_None_dtw
+Weather,720,DTW,0.35627976059913635,0.34693992137908936,/mnt/tidalfs-bdsz01/usr/panlicheng/workspace/ProjDF-OT/results_OT/diff_loss/Fredformer_Weather_720_0.9995_0.0005_0.001_type3_100_5_128_None_dtw
+Weather,Avg,DTW,0.2597954086959362,0.2800416648387909,

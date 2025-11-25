@@ -49,12 +49,12 @@ data_dict = {
 }
 
 
-def data_provider(args, flag):
+def data_provider(args, flag, shuffle=None):
     Data = data_dict[args.data]
     timeenc = 0 if args.embed != 'timeF' else 1
 
     if flag == 'test':
-        shuffle_flag = False
+        shuffle_flag = False if shuffle is None else shuffle
         drop_last = True
         if args.task_name == 'anomaly_detection' or args.task_name == 'classification':
             batch_size = args.batch_size
@@ -62,7 +62,7 @@ def data_provider(args, flag):
             batch_size = args.test_batch_size  # bsz for test
         freq = args.freq
     else:
-        shuffle_flag = True
+        shuffle_flag = True if shuffle is None else shuffle
         drop_last = True
         batch_size = args.batch_size  # bsz for train and valid
         freq = args.freq

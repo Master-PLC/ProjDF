@@ -14,7 +14,9 @@ import pandas as pd
 import seaborn as sns
 import torch
 import yaml
+import tarfile
 from matplotlib.backends.backend_pdf import PdfPages
+from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 
 def set_seed(seed):
@@ -61,7 +63,7 @@ def exist_metric(exp_dir):
         if os.path.exists(metric_path):
             return True, setting_dir
         else:
-            return False, None
+            return False, setting_dir
     except Exception as e:
         return False, None
 
@@ -150,3 +152,82 @@ def load_metric_from_log(log_path):
                     metrics[key] = value
             return metrics
     return None
+
+
+def restore_folder(target_folder, remove_archive=False):
+    # 1. 构造压缩包的完整路径
+    archive_path = os.path.join(target_folder, "archive.tar.xz")
+    
+    # 2. 检查文件是否存在
+    if not os.path.exists(archive_path):
+        print(f"错误: 在该路径下找不到 archive.tar.xz -> {target_folder}")
+        return
+
+    try:
+        print(f"正在解压: {target_folder} ...")
+        
+        # 3. 打开压缩包 ('r:xz' 表示读取 xz 压缩格式)
+        with tarfile.open(archive_path, "r:xz") as tar:
+            # 4. 解压到指定目录 (path 参数相当于 tar 命令的 -C)
+            # 警告：在 Python 3.12+ 中，出于安全考虑，可能需要添加 filter='data'
+            # tar.extractall(path=target_folder, filter='data') 
+            tar.extractall(path=target_folder)
+            
+        print("✅ 解压成功！")
+        
+        # 5. (可选) 解压后删除压缩包
+        if remove_archive:
+            os.remove(archive_path)
+            print("已删除压缩包文件")
+        
+    except Exception as e:
+        print(f"❌ 解压出错: {str(e)}")
+
+
+def read_tensorboard_file(path):
+    # 加载日志文件
+    ea = EventAccumulator(path)
+    ea.Reload()
+
+    data_dict = {}
+    
+    # 获取所有可用的 tag (比如 'loss', 'accuracy' 等)
+    tags = ea.Tags()['scalars']
+
+    for tag in tags:
+        # 获取该 tag 下的所有数据点
+        events = ea.Scalars(tag)
+        
+        # 解析成列表或字典格式
+        # event 包含三个属性: wall_time (时间戳), step (步数), value (数值)
+        data_dict[tag] = [
+            {"step": e.step, "value": e.value, "time": e.wall_time} 
+            for e in events
+        ]
+        
+    return data_dict
+
+
+def tensorboard_smoothing(values, weight=0.6):
+    """
+    严格模拟 TensorBoard 前端处理逻辑 (包含偏差修正)
+    """
+    last = 0
+    smoothed = []
+    num_accum = 0
+    
+    for point in values:
+        last = last * weight + point * (1 - weight)
+        num_accum += 1
+        
+        # 偏差修正: 
+        # 在初期，由于 last 从 0 开始，会导致平滑值偏小。
+        # 需要除以 (1 - weight^steps) 来修正。
+        debias_weight = 1
+        if weight != 1.0:
+            debias_weight = 1.0 - (weight ** num_accum)
+            
+        smoothed_val = last / debias_weight
+        smoothed.append(smoothed_val)
+
+    return smoothed

@@ -7,6 +7,7 @@ import yaml
 from copy import deepcopy
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 import torch.profiler as profiler
 from data_provider.data_factory import data_provider
 from exp.exp_basic import Exp_Basic
@@ -18,7 +19,6 @@ from utils.dilate_loss import dilate_loss
 from utils.dilate_loss_cuda import DilateLossCUDA
 # from utils.dilate_loss_cache import dilate_loss
 from utils.soft_dtw_cuda import SoftDTW
-from utils.ldtw_cuda import LDTW
 from utils.dtw_cuda import DTW
 from utils.dpp_loss import dpp_loss
 from utils.fft_ot import cal_wasserstein
@@ -32,24 +32,178 @@ from utils.tools import EarlyStopping, visual, Scheduler, adjust_learning_rate
 warnings.filterwarnings('ignore')
 
 
-class Exp_Long_Term_Forecast(Exp_Basic):
+class Exp_Long_Term_Forecast_Iter(Exp_Basic):
     def __init__(self, args):
         super().__init__(args)
         self.pred_len = args.pred_len
         self.label_len = args.label_len
 
-        if args.add_noise and args.noise_amp > 0:
-            seq_len = args.pred_len
-            cutoff_freq_percentage = args.noise_freq_percentage
-            cutoff_freq = int((seq_len // 2 + 1) * cutoff_freq_percentage)
-            if args.auxi_mode == "rfft":
-                low_pass_mask = torch.ones(seq_len // 2 + 1)
-                low_pass_mask[-cutoff_freq:] = 0.
-            else:
-                raise NotImplementedError
-            self.mask = low_pass_mask.reshape(1, -1, 1).to(self.device)
+    def _build_model(self, args=None):
+        args = deepcopy(self.args)
+        args.pred_len = 1
+        model = self.model_dict[args.model].Model(args).float()
+
+        pretrain_model_path = args.pretrain_model_path
+        if pretrain_model_path and os.path.exists(pretrain_model_path):
+            print(f'Loading pretrained model from {pretrain_model_path}')
+            state_dict = torch.load(pretrain_model_path)
+            model.load_state_dict(state_dict, strict=False)
+
+        if args.use_multi_gpu and args.use_gpu:
+            model = nn.DataParallel(model, device_ids=args.device_ids)
+        return model
+
+    def forward_step(self, batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle):
+        batch_x = batch_x.float().to(self.device)
+        batch_y = batch_y.float().to(self.device)
+        
+        # 数据准备
+        if ('PEMS' in self.args.data or 'SRU' in self.args.data) and self.args.model not in ['TiDE']:
+            batch_x_mark, batch_y_mark = None, None
         else:
-            self.mask = None
+            batch_x_mark = batch_x_mark.float().to(self.device)
+            batch_y_mark = batch_y_mark.float().to(self.device)
+
+        if batch_x_mark is not None:
+            full_marks = torch.cat([batch_x_mark, batch_y_mark[:, self.label_len:, :]], dim=1)
+        else:
+            full_marks = None
+
+        curr_x = batch_x
+        seq_len = self.args.seq_len
+        label_len = self.args.label_len
+        pred_len = self.pred_len
+        
+        # =======================================================
+        # 1. 定义 Chunk 执行函数
+        # =======================================================
+        # 这个函数会在显存中跑 chunk_size 步，这几步之间保留梯度图（快），
+        # 但块与块之间通过 Checkpoint 连接（省显存）
+        def run_chunk(start_step, chunk_steps, x_input, marks_tensor, batch_cycle_tensor=None):
+            chunk_preds = []
+            temp_x = x_input
+            
+            for k in range(chunk_steps):
+                abs_step = start_step + k
+                
+                # 准备输入
+                dec_inp = torch.zeros([batch_y.shape[0], 1, batch_y.shape[-1]], device=self.device)
+                dec_inp = torch.cat([temp_x[:, -label_len:, :], dec_inp], dim=1)
+
+                if marks_tensor is not None:
+                    cur_x_mark = marks_tensor[:, abs_step : abs_step + seq_len, :]
+                    enc_end = abs_step + seq_len
+                    cur_y_mark = marks_tensor[:, enc_end - label_len : enc_end + 1, :]
+                else:
+                    cur_x_mark, cur_y_mark = None, None
+
+                # 模型前向
+                model_args = [temp_x, cur_x_mark, dec_inp, cur_y_mark]
+                if batch_cycle_tensor is not None:
+                    model_args.append(batch_cycle_tensor)
+
+                if self.args.output_attention:
+                    out, _ = self.model(*model_args)
+                else:
+                    out = self.model(*model_args)
+                
+                step_pred = out[:, -1:, :]
+                chunk_preds.append(step_pred)
+                
+                # 更新 temp_x
+                temp_x = torch.cat([temp_x, step_pred], dim=1)
+                if temp_x.shape[1] > seq_len:
+                    temp_x = temp_x[:, -seq_len:, :]
+            
+            # 返回这一块的所有预测结果，以及最后一个状态的 x (用于传递给下一个块)
+            # 必须把 cat 后的 Tensor 返回，才能保持梯度链
+            return torch.cat(chunk_preds, dim=1), temp_x
+
+        # =======================================================
+        # 2. 训练模式：分块 Checkpoint
+        # =======================================================
+        if self.model.training:
+            # 建议 chunk_size 设置为 12 或 16
+            # 如果显存还够，可以设大一点 (比如 24)，越大概率越快
+            if 'ECL' in self.args.data_id:
+                chunk_size = 24
+            elif 'Traffic' in self.args.data_id:
+                chunk_size = 12
+            else:
+                chunk_size = 96
+            
+            total_preds = []
+            
+            # 确保第一个输入有梯度，满足 checkpoint 要求
+            if not curr_x.requires_grad:
+                curr_x.requires_grad_(True)
+
+            steps_remaining = pred_len
+            current_step = 0
+
+            while steps_remaining > 0:
+                this_chunk_size = min(chunk_size, steps_remaining)
+                
+                # 准备 Checkpoint 参数
+                args_tuple = (current_step, this_chunk_size, curr_x, full_marks)
+                if self.args.model in MODEL_REQUIRES_CYCLE:
+                    args_tuple += (batch_cycle,)
+                else:
+                    args_tuple += (None,)
+
+                # 执行 Checkpoint
+                # 这里的 run_chunk 内部是正常的反向传播图，速度快
+                # Checkpoint 只发生在块与块之间
+                chunk_out, next_x = checkpoint(run_chunk, *args_tuple, use_reentrant=False)
+                
+                total_preds.append(chunk_out)
+                curr_x = next_x # 传递给下一轮
+                
+                current_step += this_chunk_size
+                steps_remaining -= this_chunk_size
+            
+            outputs = torch.cat(total_preds, dim=1)
+            attn = None # Checkpoint 模式下无法拿到 attn
+
+        # =======================================================
+        # 3. 推理模式：直接循环 (为了拿到 attn 和更少的 overhead)
+        # =======================================================
+        else:
+            preds = []
+            for i in range(pred_len):
+                dec_inp = torch.zeros([batch_y.shape[0], 1, batch_y.shape[-1]], device=self.device)
+                dec_inp = torch.cat([curr_x[:, -label_len:, :], dec_inp], dim=1)
+
+                if full_marks is not None:
+                    cur_x_mark = full_marks[:, i:i + seq_len, :]
+                    enc_end = i + seq_len
+                    cur_y_mark = full_marks[:, enc_end - label_len:enc_end + 1, :]
+                else:
+                    cur_x_mark, cur_y_mark = None, None
+
+                model_args = [curr_x, cur_x_mark, dec_inp, cur_y_mark]
+                if self.args.model in MODEL_REQUIRES_CYCLE:
+                    model_args.append(batch_cycle)
+
+                if self.args.output_attention:
+                    out, attn = self.model(*model_args)
+                else:
+                    out, attn = self.model(*model_args), None
+                
+                step_pred = out[:, -1:, :]
+                preds.append(step_pred)
+                curr_x = torch.cat([curr_x, step_pred], dim=1)
+                if curr_x.shape[1] > seq_len:
+                    curr_x = curr_x[:, -seq_len:, :]
+            
+            outputs = torch.cat(preds, dim=1)
+
+        # 截取最终结果
+        f_dim = -1 if self.args.features == 'MS' else 0
+        outputs = outputs[:, -self.pred_len:, f_dim:]
+        batch_y = batch_y[:, -self.pred_len:, f_dim:]
+
+        return outputs, batch_y, attn
 
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
@@ -73,31 +227,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         self.model.train()
         return total_loss
 
-    def initialize_cache(self, train_data):
-        cache = None
-        if self.args.auxi_mode == 'basis':
-            if self.args.auxi_type == 'random':
-                cache = Random_Cache(
-                    rank_ratio=self.args.rank_ratio, pca_dim=self.args.pca_dim, pred_len=self.pred_len, 
-                    enc_in=self.args.enc_in, device=self.device
-                )
-            elif self.args.auxi_type == 'fa':
-                cache = Basis_Cache(train_data.fa_components, train_data.initializer, mean=train_data.fa_mean, device=self.device)
-            elif self.args.auxi_type == 'pca':
-                cache = Basis_Cache(train_data.pca_components, train_data.initializer, weights=train_data.weights, device=self.device)
-            elif self.args.auxi_type == 'robustpca':
-                cache = Basis_Cache(train_data.pca_components, train_data.initializer, mean=train_data.rpca_mean, device=self.device)
-            elif self.args.auxi_type == 'svd':
-                cache = Basis_Cache(train_data.svd_components, train_data.initializer, device=self.device)
-            elif self.args.auxi_type == 'ica':
-                cache = Basis_Cache(train_data.ica_components, train_data.initializer, mean=train_data.ica_mean, whitening=train_data.whitening, device=self.device)
-            elif self.args.auxi_type == 'robustica':
-                cache = Basis_Cache(train_data.ica_components, train_data.initializer, device=self.device)
-        return cache
-
     def train(self, setting, prof=None):
         train_data, train_loader = self._get_data(flag='train')
-        cache = self.initialize_cache(train_data)
         vali_data, vali_loader = self._get_data(flag='val')
 
         path = os.path.join(self.args.checkpoints, setting)
@@ -114,23 +245,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 
         model_optim = self._select_optimizer()
-        if self.args.auxi_mode == 'fourier_koopman':
-            freqs = nn.Parameter(torch.tensor(train_data.freqs, device=self.device, dtype=torch.float32))
-            model_optim.add_param_group({'params': freqs, 'lr': self.args.learning_rate})
         scheduler = Scheduler(model_optim, self.args, train_steps)
         criterion = self._select_criterion()
-        if self.args.auxi_mode == 'soft_dtw':
-            assert self.device != 'cpu' and self.device != torch.device('cpu'), "SoftDTW only supports GPU"
-            sdtw = SoftDTW(use_cuda=True, gamma=0.1)
-        elif self.args.auxi_mode == 'dtw':
-            assert self.device != 'cpu' and self.device != torch.device('cpu'), "DTW only supports GPU"
-            dtw = DTW(use_cuda=True, bandwidth=0.1)
-        elif self.args.auxi_mode == 'ldtw2':
-            assert self.device != 'cpu' and self.device != torch.device('cpu'), "LDTW only supports GPU"
-            ldtw = LDTW(use_cuda=True, bandwidth=0.1, max_length=self.args.warping_length)
-        elif self.args.auxi_mode == 'dilate_cuda':
-            assert self.device != 'cpu' and self.device != torch.device('cpu'), "DILATE only supports GPU"
-            dilate_cuda = DilateLossCUDA(alpha=self.args.dilate_alpha, gamma=self.args.gamma, bandwidth=0)
 
         for epoch in range(self.args.train_epochs):
             self.epoch = epoch + 1
@@ -173,124 +289,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         outputs = torch.concat((batch_x.to(outputs.device), outputs), dim=1)  # [B, S+P, D]
                         batch_y = torch.concat((batch_x.to(batch_y.device), batch_y), dim=1)  # [B, S+P, D]
 
-                    if self.args.auxi_mode == "fft":
-                        loss_auxi = torch.fft.fft(outputs, dim=1) - torch.fft.fft(batch_y, dim=1)  # shape: [B, P, D]
-
-                    elif self.args.auxi_mode == "rfft":
+                    if self.args.auxi_mode == "rfft":
                         if self.args.auxi_type == 'complex':
                             loss_auxi = torch.fft.rfft(outputs, dim=1) - torch.fft.rfft(batch_y, dim=1)  # shape: [B, P//2+1, D]
-                        elif self.args.auxi_type == 'complex-phase':
-                            loss_auxi = (torch.fft.rfft(outputs, dim=1) - torch.fft.rfft(batch_y, dim=1)).angle()  
-                        elif self.args.auxi_type == 'complex-mag-phase':
-                            loss_auxi_mag = (torch.fft.rfft(outputs, dim=1) - torch.fft.rfft(batch_y, dim=1)).abs()
-                            loss_auxi_phase = (torch.fft.rfft(outputs, dim=1) - torch.fft.rfft(batch_y, dim=1)).angle()
-                            loss_auxi = torch.stack([loss_auxi_mag, loss_auxi_phase])  # shape: [2, B, P//2+1, D]
-                        elif self.args.auxi_type == 'phase':
-                            loss_auxi = torch.fft.rfft(outputs, dim=1).angle() - torch.fft.rfft(batch_y, dim=1).angle()  # shape: [B, P//2+1, D]
-                        elif self.args.auxi_type == 'mag':
-                            loss_auxi = torch.fft.rfft(outputs, dim=1).abs() - torch.fft.rfft(batch_y, dim=1).abs()  # shape: [B, P//2+1, D]
-                        elif self.args.auxi_type == 'mag-phase':
-                            loss_auxi_mag = torch.fft.rfft(outputs, dim=1).abs() - torch.fft.rfft(batch_y, dim=1).abs()
-                            loss_auxi_phase = torch.fft.rfft(outputs, dim=1).angle() - torch.fft.rfft(batch_y, dim=1).angle()
-                            loss_auxi = torch.stack([loss_auxi_mag, loss_auxi_phase])  # shape: [2, B, P//2+1, D]
-                        else:
-                            raise NotImplementedError
-
-                    elif self.args.auxi_mode == "rfft-D":
-                        loss_auxi = torch.fft.rfft(outputs, dim=-1) - torch.fft.rfft(batch_y, dim=-1)  # shape: [B, P, D//2+1]
-
-                    elif self.args.auxi_mode == "rfft-2D":
-                        loss_auxi = torch.fft.rfft2(outputs) - torch.fft.rfft2(batch_y)  # shape: [B, P, D//2+1]
-
-                    elif self.args.auxi_mode == "basis":
-                        kwargs = {'degree': self.args.leg_degree, 'device': self.device}
-                        if self.args.auxi_type == "legendre":
-                            loss_auxi = leg_torch(outputs, **kwargs) - leg_torch(batch_y, **kwargs)  # shape: [B*D, degree+1]
-                        elif self.args.auxi_type == "chebyshev":
-                            loss_auxi = chebyshev_torch(outputs, **kwargs) - chebyshev_torch(batch_y, **kwargs)
-                        elif self.args.auxi_type == "hermite":
-                            loss_auxi = hermite_torch(outputs, **kwargs) - hermite_torch(batch_y, **kwargs)
-                        elif self.args.auxi_type == "laguerre":
-                            loss_auxi = laguerre_torch(outputs, **kwargs) - laguerre_torch(batch_y, **kwargs)
-                        elif self.args.auxi_type == "random":
-                            kwargs = {'pca_dim': self.args.pca_dim, 'random_cache': cache, 'device': self.device}
-                            loss_auxi = random_torch(outputs, **kwargs) - random_torch(batch_y, **kwargs)
-                        elif self.args.auxi_type == "fa":
-                            kwargs = {'pca_dim': self.args.pca_dim, 'fa_cache': cache, 'reinit': self.args.reinit, 'device': self.device}
-                            loss_auxi = fa_torch(outputs, **kwargs) - fa_torch(batch_y, **kwargs)
-                        elif self.args.auxi_type == "pca":
-                            kwargs = {
-                                'pca_dim': self.args.pca_dim, 'pca_cache': cache, 'use_weights': self.args.use_weights, 
-                                'reinit': self.args.reinit, 'device': self.device
-                            }
-                            if prof is not None:
-                                with profiler.record_function("auxi_loss_forward_pass"):
-                                    loss_auxi = pca_torch(outputs, **kwargs) - pca_torch(batch_y, **kwargs)
-                            else:
-                                loss_auxi = pca_torch(outputs, **kwargs) - pca_torch(batch_y, **kwargs)
-                        elif self.args.auxi_type == "robustpca":
-                            kwargs = {'pca_dim': self.args.pca_dim, 'pca_cache': cache, 'reinit': self.args.reinit, 'device': self.device}
-                            loss_auxi = robust_pca_torch(outputs, **kwargs) - robust_pca_torch(batch_y, **kwargs)
-                        elif self.args.auxi_type == "svd":
-                            kwargs = {'pca_dim': self.args.pca_dim, 'svd_cache': cache, 'reinit': self.args.reinit, 'device': self.device}
-                            loss_auxi = svd_torch(outputs, **kwargs) - svd_torch(batch_y, **kwargs)
-                        elif self.args.auxi_type == "ica":
-                            kwargs = {'pca_dim': self.args.pca_dim, 'ica_cache': cache, 'reinit': self.args.reinit, 'device': self.device}
-                            loss_auxi = ica_torch(outputs, **kwargs) - ica_torch(batch_y, **kwargs)
-                        elif self.args.auxi_type == "robustica":
-                            kwargs = {'pca_dim': self.args.pca_dim, 'ica_cache': cache, 'reinit': self.args.reinit, 'device': self.device}
-                            loss_auxi = robust_ica_torch(outputs, **kwargs) - robust_ica_torch(batch_y, **kwargs)
-                        else:
-                            raise NotImplementedError
-
-                    elif self.args.auxi_mode == "ot":
-                        kwargs = {'dist_scale': self.args.dist_scale, 'device': self.device, 'eps': self.args.eps}
-                        if self.args.auxi_type == "emd1d_t":
-                            loss_auxi = emd_loss_1d_batched_align_t(outputs, batch_y, **kwargs)
-                        elif self.args.auxi_type == "emd1d_h":
-                            loss_auxi = emd_loss_1d_batched_align_h(outputs, batch_y, **kwargs)
-                        elif self.args.auxi_type == "emd1d_all":
-                            loss_auxi = emd_loss_1d_batched_align_all(outputs, batch_y, **kwargs)
-
-                        elif self.args.auxi_type == "emd2d_h":
-                            loss_auxi = emd_loss_2d_batched_align_h(outputs, batch_y, **kwargs)
-                        elif self.args.auxi_type == "emd2d_t":
-                            loss_auxi = emd_loss_2d_batched_align_t(outputs, batch_y, **kwargs)
-                        elif self.args.auxi_type == "emd2d_all":
-                            loss_auxi = emd_loss_2d_batched_align_all(outputs, batch_y, **kwargs)
-
-                        elif self.args.auxi_type == "emd1d_h_learn_proj":
-                            outputs_proj = self.model.project(outputs)
-                            batch_y_proj = self.model.project(batch_y)
-                            loss_auxi = emd_loss_1d_batched_align_h(outputs_proj, batch_y_proj, **kwargs)
-                        elif self.args.auxi_type == "emd1d_t_learn_proj":
-                            outputs_proj = self.model.project(outputs)
-                            batch_y_proj = self.model.project(batch_y)
-                            loss_auxi = emd_loss_1d_batched_align_t(outputs_proj, batch_y_proj, **kwargs)
-                        elif self.args.auxi_type == "emd1d_all_learn_proj":
-                            outputs_proj = self.model.project(outputs)
-                            batch_y_proj = self.model.project(batch_y)
-                            loss_auxi = emd_loss_1d_batched_align_all(outputs_proj, batch_y_proj, **kwargs)
-
-                        elif self.args.auxi_type == "emd1d_h_pca_proj":
-                            n_feats, rank_ratio = self.args.c_out, self.args.rank_ratio
-                            low_rank = int(n_feats * rank_ratio)
-                            outputs_proj = torch.matmul(outputs, torch.pca_lowrank(outputs.reshape(-1, n_feats), low_rank)[-1])
-                            batch_y_proj = torch.matmul(batch_y, torch.pca_lowrank(batch_y.reshape(-1, n_feats), low_rank)[-1])
-                            loss_auxi = emd_loss_1d_batched_align_h(outputs_proj, batch_y_proj, **kwargs)
-                        elif self.args.auxi_type == "emd1d_t_pca_proj":
-                            n_feats, rank_ratio = self.args.c_out, self.args.rank_ratio
-                            low_rank = int(n_feats * rank_ratio)
-                            outputs_proj = torch.matmul(outputs, torch.pca_lowrank(outputs.reshape(-1, n_feats), low_rank)[-1])
-                            batch_y_proj = torch.matmul(batch_y, torch.pca_lowrank(batch_y.reshape(-1, n_feats), low_rank)[-1])
-                            loss_auxi = emd_loss_1d_batched_align_t(outputs_proj, batch_y_proj, **kwargs)
-                        elif self.args.auxi_type == "emd1d_all_pca_proj":
-                            n_feats, rank_ratio = self.args.c_out, self.args.rank_ratio
-                            low_rank = int(n_feats * rank_ratio)
-                            outputs_proj = torch.matmul(outputs, torch.pca_lowrank(outputs.reshape(-1, n_feats), low_rank)[-1])
-                            batch_y_proj = torch.matmul(batch_y, torch.pca_lowrank(batch_y.reshape(-1, n_feats), low_rank)[-1])
-                            loss_auxi = emd_loss_1d_batched_align_all(outputs_proj, batch_y_proj, **kwargs)
-
                         else:
                             raise NotImplementedError
 
@@ -301,54 +302,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                             var_weight=self.args.var_weight, mean_weight=self.args.mean_weight
                         )
 
-                    elif self.args.auxi_mode == "fft_ot_2D":
-                        outputs = outputs.reshape(outputs.shape[0], -1, 1)
-                        batch_y = batch_y.reshape(batch_y.shape[0], -1, 1)
-                        loss_auxi = cal_wasserstein(
-                            outputs, batch_y, self.args.distance, ot_type=self.args.ot_type, normalize=self.args.normalize, 
-                            mask_factor=self.args.mask_factor, reg_sk=self.args.reg_sk, stopThr=self.args.stopThr, numItermax=self.args.numItermax, 
-                            var_weight=self.args.var_weight, mean_weight=self.args.mean_weight
-                        )
-
-                    elif self.args.auxi_mode == "fourier_koopman":
-                        loss_auxi = fourier_loss(outputs, batch_y, freqs, device=self.device)
-
-                    elif self.args.auxi_mode == "dilate":
-                        loss_auxi, _, _ = dilate_loss(outputs, batch_y, self.args.alpha, self.args.gamma, self.device)
-
-                    elif self.args.auxi_mode == "dpp":
-                        loss_auxi = dpp_loss(outputs, batch_y, self.args.alpha, self.args.gamma, self.device)
-
-                    elif self.args.auxi_mode == "soft_dtw":
-                        loss_auxi = sdtw(outputs, batch_y)
-
-                    elif self.args.auxi_mode == "dtw":
-                        loss_auxi = dtw(outputs, batch_y)[0].mean()
-
-                    elif self.args.auxi_mode == "ldtw2":
-                        loss_auxi = ldtw(outputs, batch_y)[0].mean()
-                    
-                    elif self.args.auxi_mode == "dtw2":
-                        loss_auxi = dtw2(
-                            outputs.permute(1, 0, 2).reshape(self.pred_len, -1),
-                            batch_y.permute(1, 0, 2).reshape(self.pred_len, -1),
-                        )
-
-                    elif self.args.auxi_mode == "ldtw":
-                        loss_auxi = dtw_limited_warping_length(
-                            outputs.permute(1, 0, 2).reshape(self.pred_len, -1),
-                            batch_y.permute(1, 0, 2).reshape(self.pred_len, -1),
-                            max_length=self.args.warping_length
-                        )
-
-                    elif self.args.auxi_mode == "dilate_cuda":
-                        loss_auxi = dilate_cuda(outputs, batch_y)
-
                     else:
                         raise NotImplementedError
-
-                    if self.mask is not None:
-                        loss_auxi *= self.mask
 
                     if self.args.auxi_loss == "MAE":
                         # MAE, 最小化element-wise error的模长
@@ -508,7 +463,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         #     reg_sk=0.005, stopThr=1e-4, numItermax=10000, var_weight=0.00002, mean_weight=1.0, reweight=True
         # )
         ot_dist_exact = cal_wasserstein(
-            _preds, _trues, "emd_per_dim", normalize=1, norm_factor='T', mask_factor=0.2, numItermax=10000
+            _preds, _trues, "emd_per_dim", normalize=1, norm_factor='T', mask_factor=0.1, numItermax=10000
         )
         wst1d = cal_wasserstein(
             _preds, _trues, "wasserstein_1d_per_dim"

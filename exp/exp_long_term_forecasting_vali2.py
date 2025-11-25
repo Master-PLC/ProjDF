@@ -32,7 +32,7 @@ from utils.tools import EarlyStopping, visual, Scheduler, adjust_learning_rate
 warnings.filterwarnings('ignore')
 
 
-class Exp_Long_Term_Forecast(Exp_Basic):
+class Exp_Long_Term_Forecast_Vali2(Exp_Basic):
     def __init__(self, args):
         super().__init__(args)
         self.pred_len = args.pred_len
@@ -51,11 +51,13 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         else:
             self.mask = None
 
-    def vali(self, vali_data, vali_loader, criterion):
+    def vali(self, vali_data, vali_loader, criterion, return_preds=False):
         total_loss = []
+        mae_loss = []
         self.model.eval()
 
         eval_time = time.time()
+        inputs, preds, trues = [], [], []
         with torch.no_grad():
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(vali_loader):
                 outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
@@ -64,14 +66,31 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 true = batch_y.detach()
 
                 loss = criterion(pred, true)
+                mae = torch.mean(torch.abs(pred - true))
 
                 total_loss.append(loss)
+                mae_loss.append(mae)
+
+                inputs.append(batch_x.detach().cpu())
+                preds.append(pred.detach().cpu())
+                trues.append(true.detach().cpu())
+
+        inputs = torch.cat(inputs, dim=0)
+        preds = torch.cat(preds, dim=0)
+        trues = torch.cat(trues, dim=0)
+        _preds = torch.cat([inputs, preds], dim=1)
+        _trues = torch.cat([inputs, trues], dim=1)
+
+        ot_dist_exact = cal_wasserstein(
+            _preds, _trues, "emd_per_dim", normalize=1, norm_factor='T', mask_factor=0.2, numItermax=10000
+        )
 
         print('Validation cost time: {}'.format(time.time() - eval_time))
         # total_loss = np.average(total_loss)
         total_loss = torch.mean(torch.stack(total_loss)).item()  # average loss
+        mae_loss = torch.mean(torch.stack(mae_loss)).item()  # average loss
         self.model.train()
-        return total_loss
+        return total_loss, mae_loss, ot_dist_exact.item()
 
     def initialize_cache(self, train_data):
         cache = None
@@ -301,15 +320,6 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                             var_weight=self.args.var_weight, mean_weight=self.args.mean_weight
                         )
 
-                    elif self.args.auxi_mode == "fft_ot_2D":
-                        outputs = outputs.reshape(outputs.shape[0], -1, 1)
-                        batch_y = batch_y.reshape(batch_y.shape[0], -1, 1)
-                        loss_auxi = cal_wasserstein(
-                            outputs, batch_y, self.args.distance, ot_type=self.args.ot_type, normalize=self.args.normalize, 
-                            mask_factor=self.args.mask_factor, reg_sk=self.args.reg_sk, stopThr=self.args.stopThr, numItermax=self.args.numItermax, 
-                            var_weight=self.args.var_weight, mean_weight=self.args.mean_weight
-                        )
-
                     elif self.args.auxi_mode == "fourier_koopman":
                         loss_auxi = fourier_loss(outputs, batch_y, freqs, device=self.device)
 
@@ -408,11 +418,13 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
             print("Epoch: {} cost time: {}".format(self.epoch, time.time() - epoch_time))
             train_loss = np.average(train_loss)
-            vali_loss = self.vali(vali_data, vali_loader, criterion)
+            vali_loss, mae_loss, ot_dist_exact = self.vali(vali_data, vali_loader, criterion)
 
             if self.writer is not None:
                 self.writer.add_scalar(f'{self.pred_len}/train/loss', train_loss, self.epoch)
                 self.writer.add_scalar(f'{self.pred_len}/vali/loss', vali_loss, self.epoch)
+                self.writer.add_scalar(f'{self.pred_len}/vali/mae', mae_loss, self.epoch)
+                self.writer.add_scalar(f'{self.pred_len}/vali/ot_dist_exact', ot_dist_exact, self.epoch)
 
             print(
                 "Epoch: {}, Steps: {} | Train Loss: {:.7f} Vali Loss: {:.7f}".format(

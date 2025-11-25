@@ -96,7 +96,6 @@ if __name__ == '__main__':
     parser.add_argument('--channel_independence', type=int, default=0,
                         help='1: channel dependence 0: channel independence for FreTS model')
     parser.add_argument('--scales', default=[16, 8, 4, 2, 1], help='scales in mult-scale')
-    parser.add_argument('--scales', default=[16, 8, 4, 2, 1], help='scales in mult-scale')
     parser.add_argument('--scale_factor', type=int, default=2, help='scale factor for upsample')
     parser.add_argument('--down_sampling_layers', type=int, default=0, help='num of down sampling layers')
     parser.add_argument('--down_sampling_window', type=int, default=1, help='down sampling window size')
@@ -283,6 +282,10 @@ if __name__ == '__main__':
     # AST
     parser.add_argument('--ind_discr', type=int, default=0, help='ind_discr')
     parser.add_argument('--view_lambda', type=float, default=0.1, help='view_lambda')
+
+    parser.add_argument('--quants', default=[0.5], action=EvalAction, help='view_lambda')
+    parser.add_argument('--warping_length', type=int, default=96, help='warping_length')
+    parser.add_argument('--decomp_method', type=str, default='moving_avg', help='method of series decompsition, only support moving_avg or dft_decomp')
 
     args = parser.parse_args()
 

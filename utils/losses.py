@@ -87,3 +87,19 @@ class mase_loss(nn.Module):
         masep = torch.mean(torch.abs(insample[:, freq:] - insample[:, :-freq]), dim=1)
         masked_masep_inv = divide_no_nan(mask, masep[:, None])
         return torch.mean(torch.abs(target - forecast) * masked_masep_inv)
+
+
+class quantile_loss(nn.Module):
+    def __init__(self, tau=0.5):
+        super().__init__()
+        if isinstance(tau, float):
+            self.tau = [tau]
+        else:
+            self.tau = tau
+
+    def forward(self, y_pred, y_true):
+        errors = y_true - y_pred
+        loss = 0
+        for tau in self.tau:
+            loss += torch.max(tau * errors, (tau - 1) * errors).mean()
+        return loss

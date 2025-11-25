@@ -50,4 +50,6 @@ torchmetrics
 torch_tb_profiler
 tqdm
 tsdistances
+tslearn
 xarray
+pytorch-forecasting

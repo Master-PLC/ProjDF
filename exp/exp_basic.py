@@ -7,6 +7,7 @@ import torch.optim as optim
 from data_provider.data_factory import data_provider
 from models import MODEL_DICT, MODEL_REQUIRES_CYCLE
 from torch.utils.tensorboard import SummaryWriter
+from utils.losses import quantile_loss
 from utils.tools import pv
 
 
@@ -66,8 +67,8 @@ class Exp_Basic(object):
 
         return SummaryWriter(log_dir)
 
-    def _get_data(self, flag):
-        data_set, data_loader = data_provider(self.args, flag)
+    def _get_data(self, flag, shuffle=None):
+        data_set, data_loader = data_provider(self.args, flag, shuffle=shuffle)
         return data_set, data_loader
 
     def _select_optimizer(self, model=None, lr=None, optim_type=None):
@@ -99,6 +100,8 @@ class Exp_Basic(object):
             criterion = nn.SmoothL1Loss()
         elif loss_type == 'bce':
             criterion = nn.BCEWithLogitsLoss()
+        elif loss_type == 'quantile':
+            criterion = quantile_loss(self.args.quants)
         else:
             criterion = loss_type
         return criterion
