@@ -22,7 +22,7 @@ class Model(nn.Module):
             self.temporalQuery = torch.nn.Parameter(torch.zeros(self.cycle_len, self.enc_in), requires_grad=True)
 
         if self.channel_aggre:
-            self.channelAggregator = nn.MultiheadAttention(embed_dim=self.seq_len, num_heads=4, batch_first=True, dropout=0.5)
+            self.channelAggregator = nn.MultiheadAttention(embed_dim=self.seq_len, num_heads=configs.n_heads, batch_first=True, dropout=0.5)
 
         self.input_proj = nn.Linear(self.seq_len, self.d_model)
 

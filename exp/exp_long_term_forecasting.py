@@ -467,6 +467,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     outputs = torch.from_numpy(outputs).float().to(self.device)
                     batch_y = torch.from_numpy(batch_y).float().to(self.device)
 
+                if self.feat_ratio < 1:
+                    batch_x = batch_x[:, :, -self.enc_in:]
                 inputs.append(batch_x.cpu())
                 preds.append(outputs.cpu())
                 trues.append(batch_y.cpu())

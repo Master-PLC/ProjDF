@@ -8,6 +8,7 @@ from .exp_long_term_forecasting_meta_imaml import Exp_Long_Term_Forecast_META_iM
 from .exp_long_term_forecasting_meta_ml3 import Exp_Long_Term_Forecast_META_ML3
 from .exp_long_term_forecasting_ot import Exp_Long_Term_Forecast_OT
 from .exp_short_term_forecasting import Exp_Short_Term_Forecast
+from .exp_short_term_forecasting_meta_ml3 import Exp_Short_Term_Forecast_META_ML3
 from .exp_long_term_forecasting_gan import Exp_Long_Term_Forecast_GAN
 from .exp_long_term_forecasting_iter import Exp_Long_Term_Forecast_Iter
 from .exp_long_term_forecasting_vali import Exp_Long_Term_Forecast_Vali
@@ -16,6 +17,7 @@ from .exp_long_term_forecasting_vali2 import Exp_Long_Term_Forecast_Vali2
 EXP_DICT = {
     'long_term_forecast': Exp_Long_Term_Forecast,
     'short_term_forecast': Exp_Short_Term_Forecast,
+    'short_term_forecast_meta_ml3': Exp_Short_Term_Forecast_META_ML3,
     'long_term_forecast_meta_reptile_byturn': Exp_Long_Term_Forecast_META_Reptile_Byturn,
     'long_term_forecast_meta_reptile': Exp_Long_Term_Forecast_META_Reptile,
     'long_term_forecast_meta_mamlpp': Exp_Long_Term_Forecast_META_MAMLPP,

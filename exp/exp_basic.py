@@ -1,13 +1,14 @@
 import os
 import shutil
 
+from copy import deepcopy
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from data_provider.data_factory import data_provider
 from models import MODEL_DICT, MODEL_REQUIRES_CYCLE
 from torch.utils.tensorboard import SummaryWriter
-from utils.losses import quantile_loss
+from utils.losses import quantile_loss, mape_loss, mase_loss, smape_loss
 from utils.tools import pv
 
 
@@ -29,7 +30,17 @@ class Exp_Basic(object):
         self.report_to = args.report_to
 
     def _build_model(self, args=None):
-        args = self.args if args is None else args
+        args = deepcopy(self.args) if args is None else args
+        if hasattr(args, 'feat_ratio') and args.feat_ratio < 1:
+            self.feat_ratio = args.feat_ratio
+            self.enc_in = int(args.enc_in * self.feat_ratio)
+            self.dec_in = int(args.dec_in * self.feat_ratio)
+            self.c_out = int(args.c_out * self.feat_ratio)
+            args.enc_in = self.enc_in
+            args.dec_in = self.dec_in
+            args.c_out = self.c_out
+        else:
+            self.feat_ratio = 1
         model = self.model_dict[args.model].Model(args).float()
 
         pretrain_model_path = args.pretrain_model_path
@@ -102,6 +113,12 @@ class Exp_Basic(object):
             criterion = nn.BCEWithLogitsLoss()
         elif loss_type == 'quantile':
             criterion = quantile_loss(self.args.quants)
+        elif loss_type == 'mape':
+            criterion = mape_loss()
+        elif loss_type == 'mase':
+            criterion = mase_loss()
+        elif loss_type == 'smape':
+            criterion = smape_loss()
         else:
             criterion = loss_type
         return criterion
@@ -109,6 +126,9 @@ class Exp_Basic(object):
     def forward_step(self, batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle):
         batch_x = batch_x.float().to(self.device)
         batch_y = batch_y.float().to(self.device)
+        if self.feat_ratio < 1:
+            batch_x = batch_x[:, :, -self.enc_in:]
+            batch_y = batch_y[:, :, -self.dec_in:]
 
         if ('PEMS' in self.args.data or 'SRU' in self.args.data) and self.args.model not in ['TiDE']:
             batch_x_mark = None

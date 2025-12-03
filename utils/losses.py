@@ -64,6 +64,7 @@ class smape_loss(nn.Module):
         :param mask: 0/1 mask. Shape: batch, time
         :return: Loss value
         """
+        # breakpoint()
         return 200 * torch.mean(
             divide_no_nan(torch.abs(forecast - target), torch.abs(forecast.data) + torch.abs(target.data)) * mask
         )

@@ -3,6 +3,7 @@ import time
 import warnings
 from itertools import cycle
 
+from copy import deepcopy
 import numpy as np
 import torch
 import torch.nn as nn
@@ -27,6 +28,8 @@ class CovarianceMatrix(nn.Module):
         self.eps = 1e-6
         self.auxi_loss = args.auxi_loss
         self.meta_type = getattr(args, 'meta_type', 'all')
+        self.rank_ratio = getattr(args, 'rank_ratio', 1.0)
+        self.rank = int(self.pred_len * self.rank_ratio)
 
         if self.meta_type == 'all':
             self.L_param = nn.Parameter(torch.eye(args.pred_len))
@@ -34,6 +37,12 @@ class CovarianceMatrix(nn.Module):
             self.diag_param = nn.Parameter(torch.ones(args.pred_len))
         elif self.meta_type == 'off_diag':
             self.L_param = nn.Parameter(torch.zeros(args.pred_len, args.pred_len))
+        elif self.meta_type == 'low_rank':
+            # 将下三角部分参数化为 U @ V^T，初始化为较小的值以保持稳定
+            self.U_param = nn.Parameter(torch.randn(args.pred_len, self.rank) * 0.01)
+            self.V_param = nn.Parameter(torch.randn(args.pred_len, self.rank) * 0.01)
+            # 对角线单独学习，初始化为1
+            self.diag_param = nn.Parameter(torch.ones(args.pred_len))
         else:
             raise ValueError(f"Unknown meta_type: {self.meta_type}. Supported types: ['all', 'diag', 'off_diag']")
 
@@ -82,6 +91,25 @@ class CovarianceMatrix(nn.Module):
             L = L / row_norms
             return L
 
+        elif self.meta_type == 'low_rank':
+            if params is None:
+                U = self.U_param
+                V = self.V_param
+                d = self.diag_param
+            else:
+                U = params['U_param']
+                V = params['V_param']
+                d = params['diag_param']
+
+            W = U @ V.transpose(-1, -2)
+            L_off = torch.tril(W, diagonal=-1)
+
+            diag_values = torch.sqrt(torch.abs(d) + self.eps)
+            L_diag = torch.diag_embed(diag_values)
+
+            L = L_off + L_diag
+            return L
+
     def forward(self, params=None):
         L = self._get_L(params)
         return L @ L.transpose(-1, -2)               # Σ = L Lᵀ
@@ -120,7 +148,7 @@ class CovarianceMatrix(nn.Module):
         else:
             raise AttributeError(f"No defined loss type for {self.auxi_loss}.")
 
-        if self.args.reg_lambda > 0 and self.meta_type in ['all', 'off_diag']:
+        if self.args.reg_lambda > 0 and self.meta_type in ['all', 'off_diag', 'low_rank']:
             Sigma = self.forward(params)  # [P, P]
             off_diag = Sigma - torch.diag_embed(torch.diagonal(Sigma))
             reg_loss = torch.norm(off_diag, p='fro') ** 2
@@ -239,6 +267,9 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
     def forward_step_with_params(self, batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle, params, model):
         batch_x = batch_x.float().to(self.device)
         batch_y = batch_y.float().to(self.device)
+        if self.feat_ratio < 1:
+            batch_x = batch_x[:, :, -self.enc_in:]
+            batch_y = batch_y[:, :, -self.dec_in:]
 
         if ('PEMS' in self.args.data or 'SRU' in self.args.data) and self.args.model not in ['TiDE']:
             batch_x_mark = None
@@ -297,7 +328,8 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
             task_losses = []
 
             meta_lr_cur = A_scheduler.get_lr()
-            self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_lr', meta_lr_cur, meta_step)
+            if self.writer is not None:
+                self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_lr', meta_lr_cur, meta_step)
 
             self.model.train()
             self.A.train()
@@ -306,7 +338,8 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
             for task_id, (support_loader, query_loader) in enumerate(zip(support_loader_list, query_loader_list)):
                 meta_loss = self.inner_loop(task_id, support_loader, query_loader)
                 task_losses.append(meta_loss)
-                self.writer.add_scalar(f'{self.pred_len}/meta_train/task_{task_id+1}_meta_loss', meta_loss.item(), meta_step)
+                if self.writer is not None:
+                    self.writer.add_scalar(f'{self.pred_len}/meta_train/task_{task_id+1}_meta_loss', meta_loss.item(), meta_step)
                 if verbose:
                     print(f"\ttask: {task_id + 1}, total task: {self.num_tasks} | meta loss: {meta_loss.item():.7f}")
 
@@ -317,8 +350,9 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
             A_optim.step()
 
             avg_meta_loss_val = avg_meta_loss.item()
-            self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_loss', avg_meta_loss_val, meta_step)
-            log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/cov_mat', meta_step)
+            if self.writer is not None:
+                self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_loss', avg_meta_loss_val, meta_step)
+                log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/cov_mat', meta_step)
 
             if verbose:
                 print(f"Step: {meta_step} cost time: {time.time() - epoch_time:.2f}s")
@@ -357,7 +391,8 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
             train_loss, train_loss_mse = [], []
 
             lr_cur = scheduler.get_lr()
-            self.writer.add_scalar(f'{self.pred_len}/meta_test/lr', lr_cur, self.epoch)
+            if self.writer is not None:
+                self.writer.add_scalar(f'{self.pred_len}/meta_test/lr', lr_cur, self.epoch)
 
             epoch_time = time.time()
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(train_loader):
@@ -377,8 +412,9 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
                     loss_mse = criterion(outputs, batch_y)
                 train_loss.append(loss.item())
                 train_loss_mse.append(loss_mse.item())
-                self.writer.add_scalar(f'{self.pred_len}/meta_test_iter/loss', loss.item(), self.step)
-                self.writer.add_scalar(f'{self.pred_len}/meta_test_iter/loss_mse', loss_mse.item(), self.step)
+                if self.writer is not None:
+                    self.writer.add_scalar(f'{self.pred_len}/meta_test_iter/loss', loss.item(), self.step)
+                    self.writer.add_scalar(f'{self.pred_len}/meta_test_iter/loss_mse', loss_mse.item(), self.step)
 
                 if (i + 1) % 100 == 0:
                     print(f"\tMeta Test - iters: {i + 1}, epoch: {self.epoch} | loss: {loss.item():.7f}, mse loss: {loss_mse.item():.7f}")
@@ -397,10 +433,11 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
             train_loss_mse = np.average(train_loss_mse)
             valid_loss_mse, valid_loss_cov = self.vali(vali_data, vali_loader, criterion)
 
-            self.writer.add_scalar(f'{self.pred_len}/meta_test/loss_cov', train_loss, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/meta_test/loss_mse', train_loss_mse, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/vali/loss_cov', valid_loss_cov, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/vali/loss_mse', valid_loss_mse, self.epoch)
+            if self.writer is not None:
+                self.writer.add_scalar(f'{self.pred_len}/meta_test/loss_cov', train_loss, self.epoch)
+                self.writer.add_scalar(f'{self.pred_len}/meta_test/loss_mse', train_loss_mse, self.epoch)
+                self.writer.add_scalar(f'{self.pred_len}/vali/loss_cov', valid_loss_cov, self.epoch)
+                self.writer.add_scalar(f'{self.pred_len}/vali/loss_mse', valid_loss_mse, self.epoch)
 
             print(f"Epoch: {self.epoch} | Train Loss Cov: {train_loss:.7f}, MSE: {train_loss_mse:.7f} | Valid Loss Cov: {valid_loss_cov:.7f}, MSE: {valid_loss_mse:.7f}")
             early_stopping(valid_loss_mse, self.model, path)
@@ -420,7 +457,8 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
         os.makedirs(path, exist_ok=True)
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        self.writer = self._create_writer(res_path)
+        if self.report_to == 'tensorboard':
+            self.writer = self._create_writer(res_path)
 
         criterion = self._select_criterion()
 
@@ -478,6 +516,8 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
                     outputs = torch.from_numpy(outputs).float().to(self.device)
                     batch_y = torch.from_numpy(batch_y).float().to(self.device)
 
+                if self.feat_ratio < 1:
+                    batch_x = batch_x[:, :, -self.enc_in:]
                 inputs.append(batch_x.cpu())
                 preds.append(outputs.cpu())
                 trues.append(batch_y.cpu())
@@ -499,7 +539,7 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
         # result save
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        if self.writer is None:
+        if self.writer is None and self.report_to == 'tensorboard':
             self.writer = self._create_writer(res_path)
 
         # m = metric_collector.compute()
@@ -510,14 +550,15 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
             cov_loss = self.A.get_loss(preds, trues)
         print('{}\t| mse:{}, mae:{}, cov:{}'.format(self.pred_len, mse, mae, cov_loss))
 
-        self.writer.add_scalar(f'{self.pred_len}/test/mae', mae, self.epoch)
-        self.writer.add_scalar(f'{self.pred_len}/test/mse', mse, self.epoch)
-        self.writer.add_scalar(f'{self.pred_len}/test/rmse', rmse, self.epoch)
-        self.writer.add_scalar(f'{self.pred_len}/test/mape', mape, self.epoch)
-        self.writer.add_scalar(f'{self.pred_len}/test/mspe', mspe, self.epoch)
-        self.writer.add_scalar(f'{self.pred_len}/test/mre', mre, self.epoch)
-        self.writer.add_scalar(f'{self.pred_len}/test/cov', cov_loss, self.epoch)
-        self.writer.close()
+        if self.writer is not None:
+            self.writer.add_scalar(f'{self.pred_len}/test/mae', mae, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/test/mse', mse, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/test/rmse', rmse, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/test/mape', mape, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/test/mspe', mspe, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/test/mre', mre, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/test/cov', cov_loss, self.epoch)
+            self.writer.close()
 
         log_path = "result_long_term_forecast.txt" if not self.args.log_path else self.args.log_path
         f = open(log_path, 'a')

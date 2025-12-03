@@ -15,7 +15,9 @@ from data_provider.m4 import M4Meta
 from exp.exp_basic import Exp_Basic
 from models import MODEL_REQUIRES_CYCLE
 from torch import optim
+from utils.soft_dtw_cuda import SoftDTW
 from utils.fft_ot import cal_wasserstein
+from utils.fourier_koopman import fourier_loss
 from utils.losses import mape_loss, mase_loss, smape_loss
 from utils.m4_summary import M4Summary
 from utils.ot_dist import *
@@ -32,6 +34,7 @@ class Exp_Short_Term_Forecast(Exp_Basic):
 
         self.pred_len = self.args.pred_len
         self.label_len = self.args.label_len
+        assert self.args.output_attention == False
 
     def _build_model(self):
         if 'm4' in self.args.data:
@@ -45,36 +48,61 @@ class Exp_Short_Term_Forecast(Exp_Basic):
             model = nn.DataParallel(model, device_ids=self.args.device_ids)
         return model
 
-    def _get_data(self, flag):
-        data_set, data_loader = data_provider(self.args, flag)
-        return data_set, data_loader
+    def initialize_cache(self, train_data):
+        cache = None
+        if self.args.auxi_mode == 'basis':
+            if self.args.auxi_type == 'random':
+                cache = Random_Cache(
+                    rank_ratio=self.args.rank_ratio, pca_dim=self.args.pca_dim, pred_len=self.pred_len, 
+                    enc_in=self.args.enc_in, device=self.device
+                )
+            elif self.args.auxi_type == 'fa':
+                cache = Basis_Cache(train_data.fa_components, train_data.initializer, mean=train_data.fa_mean, device=self.device)
+            elif self.args.auxi_type == 'pca':
+                cache = Basis_Cache(train_data.pca_components, train_data.initializer, weights=train_data.weights, device=self.device)
+            elif self.args.auxi_type == 'robustpca':
+                cache = Basis_Cache(train_data.pca_components, train_data.initializer, mean=train_data.rpca_mean, device=self.device)
+            elif self.args.auxi_type == 'svd':
+                cache = Basis_Cache(train_data.svd_components, train_data.initializer, device=self.device)
+            elif self.args.auxi_type == 'ica':
+                cache = Basis_Cache(train_data.ica_components, train_data.initializer, mean=train_data.ica_mean, whitening=train_data.whitening, device=self.device)
+            elif self.args.auxi_type == 'robustica':
+                cache = Basis_Cache(train_data.ica_components, train_data.initializer, device=self.device)
+        return cache
 
-    def _select_optimizer(self):
-        model_optim = optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
-        return model_optim
+    def forward_step(self, batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle):
+        batch_x = batch_x.float().to(self.device)
+        batch_y = batch_y.float().to(self.device)
 
-    def _select_criterion(self, loss_name='SMAPE'):
-        if loss_name == 'MSE':
-            return nn.MSELoss()
-        elif loss_name == 'MAPE':
-            return mape_loss()
-        elif loss_name == 'MASE':
-            return mase_loss()
-        elif loss_name == 'SMAPE':
-            return smape_loss()
+        batch_x_mark = batch_x_mark.float().to(self.device)
+        batch_y_mark = batch_y_mark.float().to(self.device)
+
+        # decoder input
+        dec_inp = torch.zeros_like(batch_y[:, -self.pred_len:, :]).float()
+        dec_inp = torch.cat([batch_y[:, :self.label_len, :], dec_inp], dim=1).float().to(self.device)
+
+        # encoder - decoder
+        model_args = [batch_x, None, dec_inp, None]
+        if self.args.model in MODEL_REQUIRES_CYCLE:
+            model_args.append(batch_cycle)
+        outputs, attn = self.model(*model_args), None
+
+        f_dim = -1 if self.args.features == 'MS' else 0
+        outputs = outputs[:, -self.pred_len:, f_dim:]
+        batch_y = batch_y[:, -self.pred_len:, f_dim:]
+        return outputs, batch_y, attn
 
     def train(self, setting, prof=None):
         train_data, train_loader = self._get_data(flag='train')
-        if self.args.auxi_mode == 'basis':
-            if self.args.auxi_type == 'pca':
-                pca_cache = Basis_Cache(train_data.pca_components, train_data.initializer, weights=train_data.weights, device=self.device)
+        cache = self.initialize_cache(train_data)
         vali_data, vali_loader = self._get_data(flag='val')
 
         path = os.path.join(self.args.checkpoints, setting)
         os.makedirs(path, exist_ok=True)
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        self.writer = self._create_writer(res_path)
+        if self.report_to == 'tensorboard':
+            self.writer = self._create_writer(res_path)
 
         time_now = time.time()
 
@@ -82,9 +110,15 @@ class Exp_Short_Term_Forecast(Exp_Basic):
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 
         model_optim = self._select_optimizer()
+        if self.args.auxi_mode == 'fourier_koopman':
+            freqs = nn.Parameter(torch.tensor(train_data.freqs, device=self.device, dtype=torch.float32))
+            model_optim.add_param_group({'params': freqs, 'lr': self.args.learning_rate})
         scheduler = Scheduler(model_optim, self.args, train_steps)
-        criterion = self._select_criterion(self.args.loss)
+        criterion = self._select_criterion()
         mse = nn.MSELoss()
+        if self.args.auxi_mode == 'soft_dtw':
+            assert self.device != 'cpu' and self.device != torch.device('cpu'), "SoftDTW only supports GPU"
+            sdtw = SoftDTW(use_cuda=True, gamma=0.1)
 
         for epoch in range(self.args.train_epochs):
             self.epoch = epoch + 1
@@ -92,7 +126,9 @@ class Exp_Short_Term_Forecast(Exp_Basic):
             train_loss = []
 
             lr_cur = scheduler.get_lr()
-            self.writer.add_scalar(f'{self.seasonal_patterns}/train/lr', lr_cur, self.epoch)
+            lr_cur = lr_cur[0] if isinstance(lr_cur, list) else lr_cur
+            if self.writer is not None:
+                self.writer.add_scalar(f'{self.seasonal_patterns}/train/lr', lr_cur, self.epoch)
 
             self.model.train()
             epoch_time = time.time()
@@ -101,29 +137,21 @@ class Exp_Short_Term_Forecast(Exp_Basic):
                 iter_count += 1
                 model_optim.zero_grad()
 
-                batch_x = batch_x.float().to(self.device)
-                batch_y = batch_y.float()
-                batch_y_mark = batch_y_mark.float()
-
-                # decoder input
-                dec_inp = torch.zeros_like(batch_y[:, -self.pred_len:, :]).float()
-                dec_inp = torch.cat([batch_y[:, :self.label_len, :], dec_inp], dim=1).float().to(self.device)
-
-                outputs = self.model(batch_x, None, dec_inp, None)
-
+                outputs, batch_y, attn = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
                 f_dim = -1 if self.args.features == 'MS' else 0
-                outputs = outputs[:, -self.pred_len:, f_dim:]
-                batch_y = batch_y[:, -self.pred_len:, f_dim:].to(self.device)
-
                 batch_y_mark = batch_y_mark[:, -self.pred_len:, f_dim:].to(self.device)
-
-                # loss_sharpness = mse((outputs[:, 1:, :] - outputs[:, :-1, :]), (batch_y[:, 1:, :] - batch_y[:, :-1, :]))
 
                 loss = 0  # + loss_sharpness * 1e-5
                 if self.args.rec_lambda:
-                    loss_rec = criterion(batch_x, self.args.frequency_map, outputs, batch_y, batch_y_mark)
+                    if self.args.loss.lower() == 'smape':
+                        loss_rec = criterion(batch_x, self.args.frequency_map, outputs, batch_y, batch_y_mark)
+                    else:
+                        loss_rec = criterion(outputs, batch_y)
                     loss += self.args.rec_lambda * loss_rec
+                else:
+                    loss_rec = torch.tensor(1e4)
 
+                if self.step % self.log_step == 0 and self.writer is not None:
                     self.writer.add_scalar(f'{self.seasonal_patterns}/train/loss_rec', loss_rec, self.step)
 
                 if self.args.auxi_lambda:
@@ -138,45 +166,29 @@ class Exp_Short_Term_Forecast(Exp_Basic):
 
                     elif self.args.auxi_mode == "basis":
                         kwargs = {'degree': self.args.leg_degree, 'device': self.device}
-                        if self.args.auxi_type == "legendre":
-                            loss_auxi = leg_torch(outputs, **kwargs) - leg_torch(batch_y, **kwargs)  # shape: [B*D, degree+1]
-                        elif self.args.auxi_type == "chebyshev":
-                            loss_auxi = chebyshev_torch(outputs, **kwargs) - chebyshev_torch(batch_y, **kwargs)
-                        elif self.args.auxi_type == "hermite":
-                            loss_auxi = hermite_torch(outputs, **kwargs) - hermite_torch(batch_y, **kwargs)
-                        elif self.args.auxi_type == "laguerre":
-                            loss_auxi = laguerre_torch(outputs, **kwargs) - laguerre_torch(batch_y, **kwargs)
+                        if self.args.auxi_type == "random":
+                            kwargs = {'pca_dim': self.args.pca_dim, 'random_cache': cache, 'device': self.device}
+                            loss_auxi = random_torch(outputs, **kwargs) - random_torch(batch_y, **kwargs)
                         elif self.args.auxi_type == "pca":
                             kwargs = {
-                                'pca_dim': self.args.pca_dim, 'pca_cache': pca_cache, 'use_weights': self.args.use_weights, 
+                                'pca_dim': self.args.pca_dim, 'pca_cache': cache, 'use_weights': self.args.use_weights, 
                                 'reinit': self.args.reinit, 'device': self.device
                             }
                             loss_auxi = pca_torch(outputs, **kwargs) - pca_torch(batch_y, **kwargs)
                         else:
                             raise NotImplementedError
 
-                    elif self.args.auxi_mode == "ot":
-                        kwargs = {'dist_scale': self.args.dist_scale, 'device': self.device}
-                        if self.args.auxi_type == "emd1d_t":
-                            loss_auxi = emd_loss_1d_batched_align_t(outputs, batch_y, **kwargs)
-                        elif self.args.auxi_type == "emd1d_h":
-                            loss_auxi = emd_loss_1d_batched_align_h(outputs, batch_y, **kwargs)
-                        elif self.args.auxi_type == "emd1d_all":
-                            loss_auxi = emd_loss_1d_batched_align_all(outputs, batch_y, **kwargs)
+                    elif self.args.auxi_mode == "fourier_koopman":
+                        loss_auxi = fourier_loss(outputs, batch_y, freqs, device=self.device)
 
-                        elif self.args.auxi_type == "emd2d_h":
-                            loss_auxi = emd_loss_2d_batched_align_h(outputs, batch_y, **kwargs)
-                        elif self.args.auxi_type == "emd2d_t":
-                            loss_auxi = emd_loss_2d_batched_align_t(outputs, batch_y, **kwargs)
-                        elif self.args.auxi_type == "emd2d_all":
-                            loss_auxi = emd_loss_2d_batched_align_all(outputs, batch_y, **kwargs)
+                    elif self.args.auxi_mode == "soft_dtw":
+                        mu = batch_y.mean(dim=[1, 2], keepdim=True)
+                        std = batch_y.std(dim=[1, 2], keepdim=True) + 1e-6  # 加 1e-6 防止除以 0
 
-                        else:
-                            raise NotImplementedError
-
-                    elif self.args.auxi_mode == "fft_ot":
-                        loss_auxi = cal_wasserstein(outputs, batch_y, self.args.distance, ot_type=self.args.ot_type, normalize=self.args.normalize, reg_sk=self.args.reg_sk)
-
+                        # 将 true 和 pred 都归一化到同一尺度
+                        batch_y = (batch_y - mu) / std
+                        outputs = (outputs - mu) / std  # 注意：通常用 true 的统计量来归一化 pred
+                        loss_auxi = sdtw(outputs, batch_y)
                     else:
                         raise NotImplementedError
 
@@ -191,14 +203,26 @@ class Exp_Short_Term_Forecast(Exp_Basic):
                     else:
                         raise NotImplementedError
 
-                    loss += self.args.auxi_lambda * loss_auxi
+                    if torch.isnan(loss_auxi):
+                        loss_auxi = torch.tensor(0, device=self.device)
 
+                    loss += self.args.auxi_lambda * loss_auxi
+                else:
+                    loss_auxi = torch.tensor(1e4)
+
+                if self.step % self.log_step == 0 and self.writer is not None:
                     self.writer.add_scalar(f'{self.seasonal_patterns}/train/loss_auxi', loss_auxi, self.step)
 
                 train_loss.append(loss.item())
+                if self.writer is not None:
+                    self.writer.add_scalar(f'{self.seasonal_patterns}/train/loss_iter', loss.item(), self.step)
 
                 if (i + 1) % 100 == 0:
-                    print("\titers: {}, epoch: {} | loss: {:.7f}".format(i + 1, self.epoch, loss.item()))
+                    print(
+                        "\titers: {}, epoch: {} | loss_rec: {:.7f}, loss_auxi: {:.7f}, loss: {:.7f}".format(
+                            i + 1, self.epoch, loss_rec.item(), loss_auxi.item(), loss.item()
+                        )
+                    )
                     cost_time = time.time() - time_now
                     speed = cost_time / iter_count
                     left_time = speed * ((self.args.train_epochs - epoch) * train_steps - i)
@@ -209,17 +233,15 @@ class Exp_Short_Term_Forecast(Exp_Basic):
                 loss.backward()
                 model_optim.step()
 
-                if prof is not None:
-                    prof.step()
-
                 if self.args.lradj in ['TST']:
                     scheduler.step(verbose=(i + 1 == train_steps))
 
             print("Epoch: {} cost time: {}".format(self.epoch, time.time() - epoch_time))
             train_loss = np.average(train_loss)
             vali_loss = self.vali(train_loader, vali_loader, criterion)
-            self.writer.add_scalar(f'{self.seasonal_patterns}/train/loss', train_loss, self.epoch)
-            self.writer.add_scalar(f'{self.seasonal_patterns}/vali/loss', vali_loss, self.epoch)
+            if self.writer is not None:
+                self.writer.add_scalar(f'{self.seasonal_patterns}/train/loss', train_loss, self.epoch)
+                self.writer.add_scalar(f'{self.seasonal_patterns}/vali/loss', vali_loss, self.epoch)
 
             print(
                 "Epoch: {}, Steps: {} | Train Loss: {:.7f} Vali Loss: {:.7f}".format(
@@ -240,7 +262,7 @@ class Exp_Short_Term_Forecast(Exp_Basic):
         return self.model
 
     def vali(self, train_loader, vali_loader, criterion):
-        x, _ = train_loader.dataset.last_insample_window()
+        x, _, cycle = train_loader.dataset.last_insample_window()
         y = vali_loader.dataset.timeseries
         x = torch.tensor(x, dtype=torch.float32).to(self.device)
         x = x.unsqueeze(-1)  # shape [B, S, 1]
@@ -258,35 +280,45 @@ class Exp_Short_Term_Forecast(Exp_Basic):
             id_list = np.arange(0, B, 500)  # validation set size
             id_list = np.append(id_list, B)
             for i in range(len(id_list) - 1):
-                outputs[id_list[i]:id_list[i + 1], :, :] = self.model(
-                    x[id_list[i]:id_list[i + 1]], None, dec_inp[id_list[i]:id_list[i + 1]], None
-                ).detach()
+                batch_x = x[id_list[i]:id_list[i + 1]]
+                _dec_inp = dec_inp[id_list[i]:id_list[i + 1]]
+                batch_cycle = cycle[id_list[i]:id_list[i + 1]]
+                model_args = [batch_x, None, _dec_inp, None]
+                if self.args.model in MODEL_REQUIRES_CYCLE:
+                    model_args.append(batch_cycle)
+                _outputs, attn = self.model(*model_args), None
+                outputs[id_list[i]:id_list[i + 1], :, :] = _outputs.detach()
 
             f_dim = -1 if self.args.features == 'MS' else 0
             outputs = outputs[:, -self.pred_len:, f_dim:]
 
             pred = outputs
             true = torch.from_numpy(np.array(y)).to(self.device)
+            true = true.unsqueeze(-1)  # shape [B, T, 1]
             batch_y_mark = torch.ones(true.shape).to(self.device)
 
-            loss = criterion(x.detach()[:, :, 0], self.args.frequency_map, pred[:, :, 0], true, batch_y_mark)
+            if self.args.loss.lower() == 'smape':
+                loss = criterion(x.detach(), self.args.frequency_map, pred, true, batch_y_mark)
+            else:
+                loss = criterion(pred, true)
 
         print('Validation cost time: {}'.format(time.time() - eval_time))
         self.model.train()
-        return loss
+        return loss.item()
 
     def test(self, setting, test=0):
         _, train_loader = self._get_data(flag='train')
         _, test_loader = self._get_data(flag='test')
 
-        x, _ = train_loader.dataset.last_insample_window()
+        x, _, cycle = train_loader.dataset.last_insample_window()
         y = test_loader.dataset.timeseries
         x = torch.tensor(x, dtype=torch.float32).to(self.device)
         x = x.unsqueeze(-1)  # shape [B, S, 1]
 
         if test:
             print('loading model')
-            self.model.load_state_dict(torch.load(os.path.join(self.args.checkpoints, setting, 'checkpoint.pth')))
+            ckpt_dir = os.path.join(self.args.checkpoints, setting)
+            self.model.load_state_dict(torch.load(os.path.join(ckpt_dir, 'checkpoint.pth')))
 
         folder_path = os.path.join(self.args.test_results, setting)
         os.makedirs(folder_path, exist_ok=True)
@@ -302,9 +334,14 @@ class Exp_Short_Term_Forecast(Exp_Basic):
             id_list = np.arange(0, B, 1)
             id_list = np.append(id_list, B)
             for i in range(len(id_list) - 1):
-                outputs[id_list[i]:id_list[i + 1], :, :] = self.model(
-                    x[id_list[i]:id_list[i + 1]], None, dec_inp[id_list[i]:id_list[i + 1]], None
-                )
+                batch_x = x[id_list[i]:id_list[i + 1]]
+                _dec_inp = dec_inp[id_list[i]:id_list[i + 1]]
+                batch_cycle = cycle[id_list[i]:id_list[i + 1]]
+                model_args = [batch_x, None, _dec_inp, None]
+                if self.args.model in MODEL_REQUIRES_CYCLE:
+                    model_args.append(batch_cycle)
+                _outputs, attn = self.model(*model_args), None
+                outputs[id_list[i]:id_list[i + 1], :, :] = _outputs
 
                 if id_list[i] % 1000 == 0:
                     print(id_list[i])
@@ -330,7 +367,7 @@ class Exp_Short_Term_Forecast(Exp_Basic):
         os.makedirs(res_path, exist_ok=True)
         summary_path = os.path.join(self.args.results, "m4_results")
         os.makedirs(summary_path, exist_ok=True)
-        if self.writer is None:
+        if self.report_to == 'tensorboard' and self.writer is None:
             self.writer = self._create_writer(res_path)
 
         forecasts_df = pandas.DataFrame(preds[:, :, 0].cpu().numpy(), columns=[f'V{i+1}' for i in range(self.pred_len)])
@@ -372,7 +409,8 @@ class Exp_Short_Term_Forecast(Exp_Basic):
         else:
             print('After all 6 tasks are finished, you can calculate the averaged index')
 
-        self.writer.close()
+        if self.writer is not None:
+            self.writer.close()
 
         if not test or not os.path.exists(os.path.join(res_path, 'config.yaml')):
             print('save configs')

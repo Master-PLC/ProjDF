@@ -184,26 +184,43 @@ def restore_folder(target_folder, remove_archive=False):
         print(f"❌ 解压出错: {str(e)}")
 
 
-def read_tensorboard_file(path):
-    # 加载日志文件
-    ea = EventAccumulator(path)
+def read_tensorboard_file(path, load_image=False):
+    # 1. 设置 size_guidance
+    # 'images': 0 表示加载该 tag 下所有的图片数据，不进行采样或截断
+    if load_image:
+        ea = EventAccumulator(path, size_guidance={'images': 0})
+    else:
+        ea = EventAccumulator(path)
     ea.Reload()
 
     data_dict = {}
     
-    # 获取所有可用的 tag (比如 'loss', 'accuracy' 等)
-    tags = ea.Tags()['scalars']
+    # --- 读取 Scalars (Loss, Accuracy 等) ---
+    # 先判断是否存在 scalars，防止报错
+    if 'scalars' in ea.Tags():
+        for tag in ea.Tags()['scalars']:
+            events = ea.Scalars(tag)
+            data_dict[tag] = [
+                {"step": e.step, "value": e.value, "time": e.wall_time, "type": "scalar"} 
+                for e in events
+            ]
 
-    for tag in tags:
-        # 获取该 tag 下的所有数据点
-        events = ea.Scalars(tag)
-        
-        # 解析成列表或字典格式
-        # event 包含三个属性: wall_time (时间戳), step (步数), value (数值)
-        data_dict[tag] = [
-            {"step": e.step, "value": e.value, "time": e.wall_time} 
-            for e in events
-        ]
+    # --- 读取 Images (包括 add_figure 加入的内容) ---
+    if 'images' in ea.Tags() and load_image:
+        for tag in ea.Tags()['images']:
+            events = ea.Images(tag)
+            data_dict[tag] = []
+            
+            for e in events:
+                # e 包含: wall_time, step, encoded_image_string, width, height
+                data_dict[tag].append({
+                    "step": e.step,
+                    "value": e.encoded_image_string,   # 这里存的是 PIL.Image 对象
+                    "time": e.wall_time,
+                    "width": e.width,
+                    "height": e.height,
+                    "type": "bytes"
+                })
         
     return data_dict
 

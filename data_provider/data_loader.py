@@ -1344,6 +1344,8 @@ class Dataset_M4(Dataset):
         ]
         self.ids = np.array([i for i in dataset.ids[dataset.groups == self.seasonal_patterns]])
         self.timeseries = [ts for ts in training_values]
+        ts_length = sum([len(ts) for ts in self.timeseries])
+        self.cycle_index = np.arange(ts_length+1) % self.cycle
 
     def __getitem__(self, index):
         insample = np.zeros((self.seq_len, 1))
@@ -1366,7 +1368,9 @@ class Dataset_M4(Dataset):
         ]
         outsample[:len(outsample_window), 0] = outsample_window
         outsample_mask[:len(outsample_window), 0] = 1.0
-        return insample, outsample, insample_mask, outsample_mask
+        cusum_length = sum([len(ts) for ts in self.timeseries[:index]])
+        cycle_index = torch.tensor(self.cycle_index[cusum_length + cut_point])
+        return insample, outsample, insample_mask, outsample_mask, cycle_index
 
     def __len__(self):
         return len(self.timeseries)
@@ -1383,11 +1387,15 @@ class Dataset_M4(Dataset):
         """
         insample = np.zeros((len(self.timeseries), self.seq_len))
         insample_mask = np.zeros((len(self.timeseries), self.seq_len))
+        cycle_index = []
         for i, ts in enumerate(self.timeseries):
             ts_last_window = ts[-self.seq_len:]
             insample[i, -len(ts):] = ts_last_window
             insample_mask[i, -len(ts):] = 1.0
-        return insample, insample_mask
+            s_end = sum([len(ts) for ts in self.timeseries[:i+1]])
+            cycle_index.append(self.cycle_index[s_end])
+        cycle_index = torch.tensor(cycle_index)
+        return insample, insample_mask, cycle_index
 
 
 class Dataset_M4_PCA(Dataset_M4):
@@ -1423,6 +1431,37 @@ class Dataset_M4_PCA(Dataset_M4):
         self.pca_components, self.initializer, self.weights = get_pca_base(label_seq, rank_ratio, pca_dim, reinit, self.speedup_sklearn)
         print(f"PCA components shape: {self.pca_components.shape}")
         print(f"PCA weights shape: {self.weights.shape}")
+
+
+class Dataset_M4_Fourier(Dataset_M4):
+    def __init__(
+        self, root_path, flag='pred', size=None, features='S', data_path='ETTh1.csv',
+        target='OT', scale=True, inverse=False, timeenc=0, freq='15min', seasonal_patterns='Yearly', 
+        add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
+        noise_type='sin', data_percentage=1., rank_ratio=1.0, pca_dim="all", 
+        reinit=0, speedup_sklearn=0, num_freqs=16, cycle=None, **kwargs
+    ):
+        super().__init__(
+            root_path, flag, size, features, data_path, target, scale, inverse,
+            timeenc, freq, seasonal_patterns, add_noise, noise_amp,
+            noise_freq_percentage, noise_seed, noise_type,
+            data_percentage, cycle, **kwargs
+        )
+
+        self.fourier_fit(num_freqs)
+
+    def fourier_fit(self, num_freqs=10):
+        if self.flag != 'train':
+            self.freqs = None
+            return
+
+        print("Fitting fourier ...")
+        f = fourier(num_freqs=num_freqs)
+        data_x = np.concatenate(self.timeseries, axis=0)
+        data_x = data_x.reshape(-1, 1)
+        f.fft(data_x)
+        self.freqs = f.freqs
+        print(f"Fourier freqs: {self.freqs}")
 
 
 class Dataset_M4_CCA(Dataset_M4):

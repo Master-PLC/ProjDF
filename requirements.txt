@@ -38,6 +38,7 @@ scipy
 seaborn
 setproctitle
 sktime
+statsmodels
 sympy
 tensorboard
 tensorboard-plugin-profile

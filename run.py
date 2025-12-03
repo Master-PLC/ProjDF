@@ -287,6 +287,8 @@ if __name__ == '__main__':
     parser.add_argument('--warping_length', type=int, default=96, help='warping_length')
     parser.add_argument('--decomp_method', type=str, default='moving_avg', help='method of series decompsition, only support moving_avg or dft_decomp')
 
+    parser.add_argument('--feat_ratio', type=float, default=1.0, help='mask_feat_ratio')
+
     args = parser.parse_args()
 
     fix_seed = args.fix_seed

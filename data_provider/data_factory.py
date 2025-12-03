@@ -2,7 +2,7 @@ from data_provider.data_loader import Dataset_Custom, Dataset_Custom_CCA, Datase
     Dataset_Custom_ICA, Dataset_Custom_PCA, Dataset_Custom_RobustICA, Dataset_Custom_RobustPCA, Dataset_Custom_SVD, \
     Dataset_ETT_hour, Dataset_ETT_hour_CCA, Dataset_ETT_hour_Fourier, Dataset_ETT_hour_PCA, Dataset_ETT_hour_Trend, \
     Dataset_ETT_minute, Dataset_ETT_minute_CCA, Dataset_ETT_minute_Fourier, Dataset_ETT_minute_PCA, Dataset_M4, \
-    Dataset_M4_CCA, Dataset_M4_PCA, Dataset_PEMS, Dataset_PEMS_CCA, Dataset_PEMS_PCA, Dataset_Solar, Dataset_SRU, \
+    Dataset_M4_CCA, Dataset_M4_PCA, Dataset_M4_Fourier, Dataset_PEMS, Dataset_PEMS_CCA, Dataset_PEMS_PCA, Dataset_Solar, Dataset_SRU, \
     MSLSegLoader, PSMSegLoader, SMAPSegLoader, SMDSegLoader, SWATSegLoader, UEAloader
 from data_provider.uea import collate_fn
 from torch.utils.data import DataLoader
@@ -38,6 +38,7 @@ data_dict = {
     'Solar': Dataset_Solar,
     'm4': Dataset_M4,
     'm4_PCA': Dataset_M4_PCA,
+    'm4_Fourier': Dataset_M4_Fourier,
     'm4_CCA': Dataset_M4_CCA,
     'PSM': PSMSegLoader,
     'MSL': MSLSegLoader,
