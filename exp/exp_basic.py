@@ -17,7 +17,7 @@ from models import MODEL_DICT, MODEL_REQUIRES_CYCLE
 from utils.fft_ot import cal_wasserstein
 from utils.losses import quantile_loss, mape_loss, mase_loss, smape_loss
 from utils.metrics_torch import metric_torch
-from utils.tools import pv, visual
+from utils.tools import pv, visual, LocalBufferWriter, BufferSummaryWriter
 
 
 class Exp_Basic(object):
@@ -86,7 +86,15 @@ class Exp_Basic(object):
             for item, item_path in zip(item_list, item_path_list):
                 shutil.move(item_path, os.path.join(pre_log_dir, item))
 
-        return SummaryWriter(log_dir)
+        if self.report_to == 'tensorboard':
+            writer = SummaryWriter(log_dir)
+        elif self.report_to == 'local':
+            writer = LocalBufferWriter(log_dir)
+        elif self.report_to == 'buffer':
+            writer = BufferSummaryWriter(log_dir)
+        else:
+            writer = None
+        return writer
 
     def _get_data(self, flag, shuffle=None):
         data_set, data_loader = data_provider(self.args, flag, shuffle=shuffle)
@@ -254,7 +262,7 @@ class Exp_Basic(object):
         # result save
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        if self.report_to == 'tensorboard' and self.writer is None:
+        if self.report_to != 'None' and self.writer is None:
             self.writer = self._create_writer(res_path)
 
         metrics = OrderedDict()

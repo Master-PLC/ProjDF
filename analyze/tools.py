@@ -55,12 +55,12 @@ def load_yaml_as_df(path):
 
 def exist_metric(exp_dir):
     try:
-        
         res_dir = os.path.join(exp_dir, 'results')
         setting = os.listdir(res_dir)[0]
         setting_dir = os.path.join(res_dir, setting)
         metric_path = os.path.join(setting_dir, 'metrics.npy')
-        if os.path.exists(metric_path):
+        metric_yaml_path = os.path.join(setting_dir, 'metrics.yaml')
+        if os.path.exists(metric_path) or os.path.exists(metric_yaml_path):
             return True, setting_dir
         else:
             return False, setting_dir

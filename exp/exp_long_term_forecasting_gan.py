@@ -53,10 +53,16 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
         self.discriminator = Discriminator(args).to(self.device)
         self.view_lambda = args.view_lambda
         self.label_smoothing = args.label_smoothing
+        self.adversarial_learning = False
         assert args.auxi_lambda
         # if not self.use_amp:
         #     self.model = torch.compile(self.model)
         #     self.discriminator = torch.compile(self.discriminator)
+
+    def check_adversarial_learning(self):
+        if self.args.fixed_step and self.step > self.args.fixed_step and not self.adversarial_learning:
+            print(f"\n>>>>>>>Adversarial learning enabled at step {self.step}, epoch {self.epoch}\n")
+            self.adversarial_learning = True
 
     def train(self, setting):
         train_data, train_loader = self._get_data(flag='train')
@@ -66,7 +72,7 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
         os.makedirs(path, exist_ok=True)
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        if self.report_to == 'tensorboard':
+        if self.report_to != 'None':
             self.writer = self._create_writer(res_path)
 
         time_now = time.time()
@@ -83,7 +89,7 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
             scaler_G = GradScaler()
 
         optimizer_D = self._select_optimizer(self.discriminator, lr=self.args.meta_lr, optim_type=self.args.meta_optim_type)
-        scheduler_D = Scheduler(optimizer_D, self.args, train_steps)
+        scheduler_D = Scheduler(optimizer_D, self.args, train_steps, lradj=self.args.meta_lradj)
         criterion_D = self._select_criterion(self.args.meta_loss)
         if self.use_amp:
             scaler_D = GradScaler()
@@ -119,6 +125,8 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
                     real = torch.ones(self.args.batch_size, 1, device=self.device)
                     fake = torch.zeros(self.args.batch_size, 1, device=self.device)
 
+                self.check_adversarial_learning()
+
                 #-------------------------------------------------------------------
                 # Train the generator 
                 #-------------------------------------------------------------------
@@ -128,15 +136,18 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
                         outputs, batch_y, attn = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
 
                         loss_rec = criterion_G(outputs, batch_y)
-                        loss += self.args.rec_lambda * loss_rec
+                        loss += self.args.rec_lambda * loss_rec if self.adversarial_learning else loss_rec
 
-                    outputs = torch.concat((batch_x.to(outputs.device), outputs), dim=1).float()  # [B, S+P, D]
-                    batch_y = torch.concat((batch_x.to(batch_y.device), batch_y), dim=1).float()  # [B, S+P, D]
+                    if self.adversarial_learning:
+                        outputs = torch.concat((batch_x.to(outputs.device), outputs), dim=1).float()  # [B, S+P, D]
+                        batch_y = torch.concat((batch_x.to(batch_y.device), batch_y), dim=1).float()  # [B, S+P, D]
 
-                    with autocast():
-                        score = self.discriminator(outputs)
-                        loss_auxi = criterion_D(score, real)
-                        loss += self.args.auxi_lambda * loss_auxi
+                        with autocast():
+                            score = self.discriminator(outputs)
+                            loss_auxi = criterion_D(score, real)
+                            loss += self.args.auxi_lambda * loss_auxi
+                    else:
+                        loss_auxi = torch.tensor(1e4, device=self.device)
 
                     optimizer_G.zero_grad()
                     scaler_G.scale(loss).backward()
@@ -146,14 +157,17 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
                     outputs, batch_y, attn = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
 
                     loss_rec = criterion_G(outputs, batch_y)
-                    loss += self.args.rec_lambda * loss_rec
+                    loss += self.args.rec_lambda * loss_rec if self.adversarial_learning else loss_rec
 
-                    outputs = torch.concat((batch_x.to(outputs.device), outputs), dim=1).float()  # [B, S+P, D]
-                    batch_y = torch.concat((batch_x.to(batch_y.device), batch_y), dim=1).float()  # [B, S+P, D]
+                    if self.adversarial_learning:
+                        outputs = torch.concat((batch_x.to(outputs.device), outputs), dim=1).float()  # [B, S+P, D]
+                        batch_y = torch.concat((batch_x.to(batch_y.device), batch_y), dim=1).float()  # [B, S+P, D]
 
-                    score = self.discriminator(outputs)
-                    loss_auxi = criterion_D(score, real)
-                    loss += self.args.auxi_lambda * loss_auxi
+                        score = self.discriminator(outputs)
+                        loss_auxi = criterion_D(score, real)
+                        loss += self.args.auxi_lambda * loss_auxi
+                    else:
+                        loss_auxi = torch.tensor(1e4, device=self.device)
 
                     optimizer_G.zero_grad()
                     loss.backward()
@@ -172,8 +186,21 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
                 # Train the discriminator
                 #-------------------------------------------------------------------
                 loss = 0
-                if self.use_amp:
-                    with autocast():
+                if self.adversarial_learning:
+                    if self.use_amp:
+                        with autocast():
+                            real_score = self.discriminator(batch_y)
+                            real_loss = criterion_D(real_score, real)
+
+                            fake_score = self.discriminator(outputs.detach())
+                            fake_loss = criterion_D(fake_score, fake)
+                            loss += 0.5 * real_loss + 0.5 * fake_loss
+
+                        optimizer_D.zero_grad()
+                        scaler_D.scale(loss).backward()
+                        scaler_D.step(optimizer_D)
+                        scaler_D.update()
+                    else:
                         real_score = self.discriminator(batch_y)
                         real_loss = criterion_D(real_score, real)
 
@@ -181,21 +208,13 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
                         fake_loss = criterion_D(fake_score, fake)
                         loss += 0.5 * real_loss + 0.5 * fake_loss
 
-                    optimizer_D.zero_grad()
-                    scaler_D.scale(loss).backward()
-                    scaler_D.step(optimizer_D)
-                    scaler_D.update()
+                        optimizer_D.zero_grad()
+                        loss.backward()
+                        optimizer_D.step()
                 else:
-                    real_score = self.discriminator(batch_y)
-                    real_loss = criterion_D(real_score, real)
-
-                    fake_score = self.discriminator(outputs.detach())
-                    fake_loss = criterion_D(fake_score, fake)
-                    loss += 0.5 * real_loss + 0.5 * fake_loss
-
-                    optimizer_D.zero_grad()
-                    loss.backward()
-                    optimizer_D.step()
+                    real_loss = torch.tensor(1e4, device=self.device)
+                    fake_loss = torch.tensor(1e4, device=self.device)
+                    loss = torch.tensor(1e4, device=self.device)
 
                 real_losses.append(real_loss.item())
                 fake_losses.append(fake_loss.item())
@@ -243,7 +262,9 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
                 .format(self.epoch, self.step, train_loss_G, rec_loss, auxi_loss, train_loss_D, real_loss, fake_loss, vali_loss)
             )
             other_to_save = {'discriminator': self.discriminator}
-            early_stopping(vali_loss, self.model, path, **other_to_save)
+            improved = early_stopping(vali_loss, self.model, path, **other_to_save)
+            self.args.learned_from_method = True if improved and self.adversarial_learning else False
+
             if early_stopping.early_stop:
                 print("Early stopping")
                 break

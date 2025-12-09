@@ -456,7 +456,7 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
         os.makedirs(path, exist_ok=True)
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        if self.report_to == 'tensorboard':
+        if self.report_to != 'None':
             self.writer = self._create_writer(res_path)
 
         criterion = self._select_criterion()
@@ -538,7 +538,7 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
         # result save
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        if self.writer is None and self.report_to == 'tensorboard':
+        if self.writer is None and self.report_to != 'None':
             self.writer = self._create_writer(res_path)
 
         metrics = OrderedDict()

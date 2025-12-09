@@ -35,7 +35,7 @@ if __name__ == '__main__':
     parser.add_argument('--output_pred', action='store_true', help='output true and pred', default=False)
     parser.add_argument('--output_vis', action='store_true', help='output visual figures', default=False)
     parser.add_argument('--output_log', action='store_true', help='output log', default=False)
-    parser.add_argument('--report_to', type=str, default='None', help='report to tensorboard or None')
+    parser.add_argument('--report_to', type=str, default='local', help='report to tensorboard or None')
 
     # data loader
     parser.add_argument('--data_id', type=str, default='ETTm1', help='dataset name')
@@ -235,6 +235,7 @@ if __name__ == '__main__':
     
     # Meta
     parser.add_argument('--meta_lr', type=float, default=0.0005, help='meta learning rate')
+    parser.add_argument('--meta_lradj', action=EvalAction, default='constant', help='meta learning rate adjust')
     parser.add_argument('--inner_lr', type=float, default=0.0005, help='inner learning rate')
     parser.add_argument('--meta_inner_steps', type=int, default=1, help='meta inner steps')
     parser.add_argument('--num_tasks', type=int, default=5, help='number of tasks')

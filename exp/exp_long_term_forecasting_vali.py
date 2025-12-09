@@ -118,7 +118,7 @@ class Exp_Long_Term_Forecast_Vali(Exp_Basic):
         os.makedirs(path, exist_ok=True)
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        if self.report_to == 'tensorboard':
+        if self.report_to != 'None':
             self.writer = self._create_writer(res_path)
 
         time_now = time.time()
