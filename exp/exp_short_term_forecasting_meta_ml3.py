@@ -1,24 +1,22 @@
 import os
-import time
-import warnings
-from itertools import cycle
-
-import numpy as np
 import pandas
 import pickle
+import time
 import torch
-import torch.nn as nn
+import warnings
 import yaml
+
+from itertools import cycle
+import numpy as np
+from torch.func import functional_call
+import torch.nn as nn
+from torch.utils.data import DataLoader
+
 from data_provider.m4 import M4Meta
 from exp.exp_basic import Exp_Basic
 from models import MODEL_REQUIRES_CYCLE
-from torch.func import functional_call
-from torch.utils.data import DataLoader
-from utils.metrics import metric
-from utils.metrics_torch import create_metric_collector, metric_torch
 from utils.m4_summary import M4Summary
-from utils.tools import EarlyStopping, Scheduler, clip_grads, disable_grad, enable_grad, log_heatmap, plot_heatmap, \
-    split_dataset, split_dataset_with_overlap, visual
+from utils.tools import EarlyStopping, Scheduler, clip_grads, disable_grad, enable_grad, log_heatmap, plot_heatmap, split_dataset, split_dataset_with_overlap, visual
 
 warnings.filterwarnings('ignore')
 
@@ -189,8 +187,8 @@ def update_param_dict(param_dict, grads_dict, lr):
 class Exp_Short_Term_Forecast_META_ML3(Exp_Basic):
     def __init__(self, args):
         self.seasonal_patterns = args.seasonal_patterns
-
         super().__init__(args)
+
         self.pred_len = self.args.pred_len
         self.label_len = self.args.label_len
         assert self.args.output_attention == False
@@ -519,7 +517,7 @@ class Exp_Short_Term_Forecast_META_ML3(Exp_Basic):
             if self.args.lradj not in ['TST']:
                 scheduler.step(valid_loss_mse, self.epoch)
 
-    def train(self, setting, prof=None):
+    def train(self, setting):
         train_data, train_loader = self._get_data(flag='train')
         support_loader_list, query_loader_list = self.initialize_meta_tasks(train_data)
         vali_data, vali_loader = self._get_data(flag='val')
@@ -550,7 +548,7 @@ class Exp_Short_Term_Forecast_META_ML3(Exp_Basic):
 
         return self.model
 
-    def test(self, setting, prof=None, test=0):
+    def test(self, setting, test=0):
         _, train_loader = self._get_data(flag='train')
         _, test_loader = self._get_data(flag='test')
         if test:
@@ -565,12 +563,12 @@ class Exp_Short_Term_Forecast_META_ML3(Exp_Basic):
         x = x.unsqueeze(-1)  # shape [B, S, 1]
 
         inputs, preds, trues = [], [], []
-        folder_path = os.path.join(self.args.test_results, setting)
-        os.makedirs(folder_path, exist_ok=True)
+        if self.output_vis:
+            folder_path = os.path.join(self.args.test_results, setting)
+            os.makedirs(folder_path, exist_ok=True)
 
         self.model.eval()
         self.A.eval()
-        # metric_collector = create_metric_collector(device=self.device)
         with torch.no_grad():
             B, _, C = x.shape
             dec_inp = torch.zeros((B, self.pred_len, C)).float().to(self.device)
@@ -601,7 +599,7 @@ class Exp_Short_Term_Forecast_META_ML3(Exp_Basic):
             trues = torch.from_numpy(np.array(y)).to(self.device)
             inputs = x.detach()
 
-            if self.args.output_vis:
+            if self.output_vis:
                 for i in range(0, preds.shape[0], preds.shape[0] // 10):
                     gt = np.concatenate((x[i, :, 0].cpu().numpy(), trues[i].cpu().numpy()), axis=0)
                     pd = np.concatenate((x[i, :, 0].cpu().numpy(), preds[i, :, 0].cpu().numpy()), axis=0)
@@ -614,8 +612,6 @@ class Exp_Short_Term_Forecast_META_ML3(Exp_Basic):
         os.makedirs(res_path, exist_ok=True)
         summary_path = os.path.join(self.args.results, "m4_results")
         os.makedirs(summary_path, exist_ok=True)
-        if self.report_to == 'tensorboard' and self.writer is None:
-            self.writer = self._create_writer(res_path)
 
         forecasts_df = pandas.DataFrame(preds[:, :, 0].cpu().numpy(), columns=[f'V{i+1}' for i in range(self.pred_len)])
         forecasts_df.index = test_loader.dataset.ids[:preds.shape[0]]
@@ -624,12 +620,7 @@ class Exp_Short_Term_Forecast_META_ML3(Exp_Basic):
         forecasts_df.to_csv(os.path.join(summary_path, self.seasonal_patterns + '_forecast.csv'))
 
         filenames = os.listdir(summary_path)
-        if 'Weekly_forecast.csv' in filenames \
-            and 'Monthly_forecast.csv' in filenames \
-            and 'Yearly_forecast.csv' in filenames \
-            and 'Daily_forecast.csv' in filenames \
-            and 'Hourly_forecast.csv' in filenames \
-            and 'Quarterly_forecast.csv' in filenames:
+        if all([f"{x}_forecast.csv" in filenames for x in M4Meta.seasonal_patterns]):
             m4_summary = M4Summary(summary_path, self.args.root_path)
             # m4_forecast.set_index(m4_winner_forecast.columns[0], inplace=True)
             smape_results, owa_results, mape, mase = m4_summary.evaluate()
@@ -639,19 +630,16 @@ class Exp_Short_Term_Forecast_META_ML3(Exp_Basic):
                 "mase": mase,
                 "owa": owa_results
             }
-            for k, v in metrics.items():
-                print(f"{k}: {v}")
+            line = "\n".join([f"{k}: {v}" for k, v in metrics.items()])
+            print(line)
 
-            with open(os.path.join(summary_path, "metrics.pkl"), 'wb') as wt:
-                pickle.dump(metrics, wt)
+            pickle.dump(metrics, open(os.path.join(summary_path, "metrics.pkl"), 'wb'))
 
-            log_path = "result_short_term_forecast.txt" if not self.args.log_path else self.args.log_path
-            f = open(log_path, 'a')
-            f.write(setting + "\n")
-            for k, v in metrics.items():
-                f.write(f"{k}: {v}\n")
-            f.write('\n\n')
-            f.close()
+            if self.output_log:
+                log_path = "result_short_term_forecast.txt" if not self.args.log_path else self.args.log_path
+                payload = f"{setting}\n\n{line}\n\n"
+                with open(log_path, mode="a", encoding="utf-8") as f:
+                    f.write(payload)
 
         else:
             print('After all 6 tasks are finished, you can calculate the averaged index')
@@ -661,8 +649,6 @@ class Exp_Short_Term_Forecast_META_ML3(Exp_Basic):
 
         if not test or not os.path.exists(os.path.join(res_path, 'config.yaml')):
             print('save configs')
-            args_dict = vars(self.args)
-            with open(os.path.join(res_path, 'config.yaml'), 'w') as yaml_file:
-                yaml.dump(args_dict, yaml_file, default_flow_style=False)
+            yaml.dump(vars(self.args), open(os.path.join(res_path, 'config.yaml'), 'w'), default_flow_style=False)
 
         return

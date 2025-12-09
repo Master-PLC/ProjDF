@@ -1,20 +1,19 @@
 import os
 import time
+import torch
 import warnings
+
+
 from copy import deepcopy
 from itertools import cycle
-
 import numpy as np
-import torch
 import torch.nn as nn
-import yaml
-from exp.exp_basic import Exp_Basic
 from torch.utils.data import DataLoader
+
+from exp.exp_basic import Exp_Basic
 from utils.fft_ot import cal_wasserstein
-from utils.metrics import metric
-from utils.metrics_torch import create_metric_collector, metric_torch
 from utils.ot_dist import *
-from utils.tools import EarlyStopping, Scheduler, adjust_learning_rate, visual
+from utils.tools import EarlyStopping, Scheduler
 
 warnings.filterwarnings('ignore')
 
@@ -25,29 +24,7 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
         self.pred_len = args.pred_len
         self.label_len = args.label_len
 
-    def vali(self, vali_data, vali_loader, criterion):
-        total_loss = []
-        self.model.eval()
-
-        eval_time = time.time()
-        with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(vali_loader):
-                outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
-
-                pred = outputs.detach()
-                true = batch_y.detach()
-
-                loss = criterion(pred, true)
-
-                total_loss.append(loss)
-
-        print('Validation cost time: {}'.format(time.time() - eval_time))
-        # total_loss = np.average(total_loss)
-        total_loss = torch.mean(torch.stack(total_loss)).item()  # average loss
-        self.model.train()
-        return total_loss
-
-    def train(self, setting, prof=None):
+    def train(self, setting):
         train_data, train_loader = self._get_data(flag='train')
         auxi_loader = DataLoader(
             train_data, batch_size=self.args.auxi_batch_size - self.args.batch_size, shuffle=True, 
@@ -60,7 +37,8 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
         os.makedirs(path, exist_ok=True)
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        self.writer = self._create_writer(res_path)
+        if self.report_to == 'tensorboard':
+            self.writer = self._create_writer(res_path)
 
         time_now = time.time()
 
@@ -82,7 +60,8 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
             train_loss = []
 
             lr_cur = scheduler.get_lr()
-            self.writer.add_scalar(f'{self.pred_len}/train/lr', lr_cur, self.epoch)
+            if self.writer is not None:
+                self.writer.add_scalar(f'{self.pred_len}/train/lr', lr_cur, self.epoch)
 
             self.model.train()
             epoch_time = time.time()
@@ -94,7 +73,7 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
                 outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
 
                 loss = criterion(outputs, batch_y)
-                if self.step % self.log_step == 0:
+                if self.step % self.log_step == 0 and self.writer is not None:
                     self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', loss.item(), self.step)
                 first_train_loss.append(loss.item())
 
@@ -115,7 +94,7 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
                     outputs, batch_y, self.args.distance, ot_type=self.args.ot_type, normalize=self.args.normalize, 
                     mask_factor=self.args.mask_factor, reg_sk=self.args.reg_sk, stopThr=self.args.stopThr, numItermax=self.args.numItermax, var_weight=self.args.var_weight
                 )
-                if self.step % self.log_step == 0:
+                if self.step % self.log_step == 0 and self.writer is not None:
                     self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', loss_auxi.item(), self.step)
                 second_train_loss.append(loss_auxi.item())
 
@@ -125,7 +104,7 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
                     continue
 
                 loss += self.args.auxi_lambda * loss_auxi
-                if self.step % self.log_step == 0:
+                if self.step % self.log_step == 0 and self.writer is not None:
                     self.writer.add_scalar(f'{self.pred_len}/train/loss_iter', loss.item(), self.step)
                 train_loss.append(loss.item())
 
@@ -158,10 +137,11 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
             train_loss = np.average(train_loss)
             vali_loss = self.vali(vali_data, vali_loader, criterion)
 
-            self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', first_train_loss, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', second_train_loss, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/train/loss', train_loss, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/vali/loss', vali_loss, self.epoch)
+            if self.writer is not None:
+                self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', first_train_loss, self.epoch)
+                self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', second_train_loss, self.epoch)
+                self.writer.add_scalar(f'{self.pred_len}/train/loss', train_loss, self.epoch)
+                self.writer.add_scalar(f'{self.pred_len}/vali/loss', vali_loss, self.epoch)
 
             print(
                 "Epoch: {}, Steps: {} | 1st Train Loss: {:.7f} 2nd Train Loss: {:.7f} Vali Loss: {:.7f}".format(
@@ -180,100 +160,3 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
         self.model.load_state_dict(torch.load(best_model_path))
 
         return self.model
-
-    def test(self, setting, prof=None, test=0):
-        test_data, test_loader = self._get_data(flag='test')
-        if test:
-            print('loading model')
-            ckpt_dir = os.path.join(self.args.checkpoints, setting)
-            self.model.load_state_dict(torch.load(os.path.join(ckpt_dir, 'checkpoint.pth')))
-
-        inputs, preds, trues = [], [], []
-        folder_path = os.path.join(self.args.test_results, setting)
-        os.makedirs(folder_path, exist_ok=True)
-
-        self.model.eval()
-        # metric_collector = create_metric_collector(device=self.device)
-        with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(test_loader):
-                outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
-
-                batch_x = batch_x.detach()
-                outputs = outputs.detach()
-                batch_y = batch_y.detach()
-
-                if test_data.scale and self.args.inverse:
-                    batch_x = batch_x.cpu().numpy()
-                    in_shape = batch_x.shape
-                    batch_x = test_data.inverse_transform(batch_x.reshape(-1, in_shape[-1])).reshape(in_shape)
-                    batch_x = torch.from_numpy(batch_x).float().to(self.device)
-
-                    outputs = outputs.cpu().numpy()
-                    batch_y = batch_y.cpu().numpy()
-                    out_shape = outputs.shape
-                    outputs = test_data.inverse_transform(outputs.reshape(-1, out_shape[-1])).reshape(out_shape)
-                    batch_y = test_data.inverse_transform(batch_y.reshape(-1, out_shape[-1])).reshape(out_shape)
-                    outputs = torch.from_numpy(outputs).float().to(self.device)
-                    batch_y = torch.from_numpy(batch_y).float().to(self.device)
-
-                inputs.append(batch_x.cpu())
-                preds.append(outputs.cpu())
-                trues.append(batch_y.cpu())
-
-                if i % 20 == 0 and self.output_vis:
-                    gt = np.concatenate((batch_x[0, :, -1].cpu().numpy(), batch_y[0, :, -1].cpu().numpy()), axis=0)
-                    pd = np.concatenate((batch_x[0, :, -1].cpu().numpy(), outputs[0, :, -1].cpu().numpy()), axis=0)
-                    visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
-
-                if prof is not None:
-                    prof.step()
-
-        inputs = torch.cat(inputs, dim=0)
-        preds = torch.cat(preds, dim=0)
-        trues = torch.cat(trues, dim=0)
-        print('test shape:', preds.shape, trues.shape)
-        inputs = inputs.reshape(-1, inputs.shape[-2], inputs.shape[-1])
-        preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
-        trues = trues.reshape(-1, trues.shape[-2], trues.shape[-1])
-        print('test shape:', preds.shape, trues.shape)
-
-        # result save
-        res_path = os.path.join(self.args.results, setting)
-        os.makedirs(res_path, exist_ok=True)
-        if self.writer is None:
-            self.writer = self._create_writer(res_path)
-
-        # m = metric_collector.compute()
-        # mae, mse, rmse, mape, mspe, mre = m["mae"], m["mse"], m["rmse"], m["mape"], m["mspe"], m["mre"]
-        mae, mse, rmse, mape, mspe, mre = metric_torch(preds, trues)
-        print('{}\t| mse:{}, mae:{}'.format(self.pred_len, mse, mae))
-
-        self.writer.add_scalar(f'{self.pred_len}/test/mae', mae, self.epoch)
-        self.writer.add_scalar(f'{self.pred_len}/test/mse', mse, self.epoch)
-        self.writer.add_scalar(f'{self.pred_len}/test/rmse', rmse, self.epoch)
-        self.writer.add_scalar(f'{self.pred_len}/test/mape', mape, self.epoch)
-        self.writer.add_scalar(f'{self.pred_len}/test/mspe', mspe, self.epoch)
-        self.writer.add_scalar(f'{self.pred_len}/test/mre', mre, self.epoch)
-        self.writer.close()
-
-        log_path = "result_long_term_forecast.txt" if not self.args.log_path else self.args.log_path
-        f = open(log_path, 'a')
-        f.write(setting + "\n")
-        f.write('mse:{}, mae:{}'.format(mse, mae))
-        f.write('\n\n')
-        f.close()
-
-        np.save(os.path.join(res_path, 'metrics.npy'), np.array([mae, mse, rmse, mape, mspe, mre]))
-
-        if self.output_pred:
-            np.save(os.path.join(res_path, 'input.npy'), inputs.cpu().numpy())
-            np.save(os.path.join(res_path, 'pred.npy'), preds.cpu().numpy())
-            np.save(os.path.join(res_path, 'true.npy'), trues.cpu().numpy())
-
-        if not test or not os.path.exists(os.path.join(res_path, 'config.yaml')):
-            print('save configs')
-            args_dict = vars(self.args)
-            with open(os.path.join(res_path, 'config.yaml'), 'w') as yaml_file:
-                yaml.dump(args_dict, yaml_file, default_flow_style=False)
-
-        return

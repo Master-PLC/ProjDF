@@ -25,7 +25,6 @@ if __name__ == '__main__':
     parser.add_argument('--fix_seed', type=int, default=2023, help='random seed')
     parser.add_argument('--rerun', type=int, help='rerun', default=0)
     parser.add_argument('--verbose', type=int, help='verbose', default=0)
-    parser.add_argument('--use_profiler', type=int, help='use profiler', default=0)
 
     # save
     parser.add_argument('--checkpoints', type=str, default='./checkpoints/', help='location of model checkpoints')
@@ -35,6 +34,7 @@ if __name__ == '__main__':
     parser.add_argument('--log_step', type=int, default=10, help='log step')
     parser.add_argument('--output_pred', action='store_true', help='output true and pred', default=False)
     parser.add_argument('--output_vis', action='store_true', help='output visual figures', default=False)
+    parser.add_argument('--output_log', action='store_true', help='output log', default=False)
     parser.add_argument('--report_to', type=str, default='None', help='report to tensorboard or None')
 
     # data loader
@@ -289,6 +289,11 @@ if __name__ == '__main__':
 
     parser.add_argument('--feat_ratio', type=float, default=1.0, help='mask_feat_ratio')
 
+    # GanDF
+    parser.add_argument('--extra_metrics', action=EvalAction, default=[], help='extra_metrics')
+    parser.add_argument('--spectral_norm', type=int, default=0, help='spectral norm')
+    parser.add_argument('--label_smoothing', type=float, default=0, help='label smoothing')
+
     args = parser.parse_args()
 
     fix_seed = args.fix_seed
@@ -357,40 +362,11 @@ if __name__ == '__main__':
 
             exp = Exp(args)
 
-            if args.use_profiler:
-                with torch.profiler.profile(
-                    activities=[
-                        torch.profiler.ProfilerActivity.CPU,
-                        torch.profiler.ProfilerActivity.CUDA,
-                    ],
-                    schedule=torch.profiler.schedule(wait=2, warmup=3, active=100, repeat=1),
-                    on_trace_ready=torch.profiler.tensorboard_trace_handler(os.path.join(args.results, setting)),
-                    record_shapes=True,
-                    profile_memory=True,
-                    with_stack=True
-                ) as prof:
-                    print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
-                    exp.train(setting, prof=prof)
+            print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
+            exp.train(setting)
 
-                with torch.profiler.profile(
-                    activities=[
-                        torch.profiler.ProfilerActivity.CPU,
-                        torch.profiler.ProfilerActivity.CUDA,
-                    ],
-                    schedule=torch.profiler.schedule(wait=2, warmup=3, active=100, repeat=1),
-                    on_trace_ready=torch.profiler.tensorboard_trace_handler(os.path.join(args.results, setting)),
-                    record_shapes=True,
-                    profile_memory=True,
-                    with_stack=True
-                ) as prof:
-                    print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-                    exp.test(setting, prof=prof)
-            else:
-                print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
-                exp.train(setting)
-
-                print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-                exp.test(setting)
+            print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+            exp.test(setting)
 
             torch.cuda.empty_cache()
 

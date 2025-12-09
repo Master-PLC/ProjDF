@@ -1,21 +1,20 @@
 import os
 import time
-import warnings
-from itertools import cycle
-
-from copy import deepcopy
-import numpy as np
 import torch
-import torch.nn as nn
+import warnings
 import yaml
+
+from collections import OrderedDict
+from itertools import cycle
+import numpy as np
+from torch.func import functional_call
+import torch.nn as nn
+from torch.utils.data import DataLoader
+
 from exp.exp_basic import Exp_Basic
 from models import MODEL_REQUIRES_CYCLE
-from torch.func import functional_call
-from torch.utils.data import DataLoader
-from utils.metrics import metric
-from utils.metrics_torch import create_metric_collector, metric_torch
-from utils.tools import EarlyStopping, Scheduler, clip_grads, disable_grad, enable_grad, log_heatmap, plot_heatmap, \
-    split_dataset, split_dataset_with_overlap, visual
+from utils.metrics_torch import metric_torch
+from utils.tools import EarlyStopping, Scheduler, clip_grads, disable_grad, enable_grad, log_heatmap, plot_heatmap, split_dataset, split_dataset_with_overlap, visual
 
 warnings.filterwarnings('ignore')
 
@@ -448,7 +447,7 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
             if self.args.lradj not in ['TST']:
                 scheduler.step(valid_loss_mse, self.epoch)
 
-    def train(self, setting, prof=None):
+    def train(self, setting):
         train_data, train_loader = self._get_data(flag='train')
         support_loader_list, query_loader_list = self.initialize_meta_tasks(train_data)
         vali_data, vali_loader = self._get_data(flag='val')
@@ -479,7 +478,7 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
 
         return self.model
 
-    def test(self, setting, prof=None, test=0):
+    def test(self, setting, test=0):
         test_data, test_loader = self._get_data(flag='test')
         if test:
             print('loading model')
@@ -488,12 +487,12 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
             self.A = torch.load(os.path.join(ckpt_dir, 'A.pth'))
 
         inputs, preds, trues = [], [], []
-        folder_path = os.path.join(self.args.test_results, setting)
-        os.makedirs(folder_path, exist_ok=True)
+        if self.output_vis:
+            folder_path = os.path.join(self.args.test_results, setting)
+            os.makedirs(folder_path, exist_ok=True)
 
         self.model.eval()
         self.A.eval()
-        # metric_collector = create_metric_collector(device=self.device)
         with torch.no_grad():
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(test_loader):
                 outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
@@ -542,32 +541,38 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
         if self.writer is None and self.report_to == 'tensorboard':
             self.writer = self._create_writer(res_path)
 
-        # m = metric_collector.compute()
-        # mae, mse, rmse, mape, mspe, mre = m["mae"], m["mse"], m["rmse"], m["mape"], m["mspe"], m["mre"]
+        metrics = OrderedDict()
         mae, mse, rmse, mape, mspe, mre = metric_torch(preds, trues)
-        with torch.no_grad():
-            self.A.to(preds.device)
-            cov_loss = self.A.get_loss(preds, trues)
-        print('{}\t| mse:{}, mae:{}, cov:{}'.format(self.pred_len, mse, mae, cov_loss))
+        metrics['mae'] = mae; metrics['mse'] = mse; metrics['rmse'] = rmse; metrics['mape'] = mape; metrics['mspe'] = mspe; metrics['mre'] = mre
+
+        extra_metrics = OrderedDict()
+        if self.args.extra_metrics != []:
+            if 'cov' in self.args.extra_metrics:
+                with torch.no_grad():
+                    self.A.to(preds.device)
+                    cov_loss = self.A.get_loss(preds, trues)
+                extra_metrics['cov'] = cov_loss.item()
+
+        full_metrics = OrderedDict(**metrics, **extra_metrics)
+        line = f'{self.args.data_id} @ {self.pred_len}\t| mse:{mse} mae:{mae}'
+        if self.args.extra_metrics != []:
+            extra_line = ', '.join([f'{k}:{v}' for k, v in extra_metrics.items()])
+            line = f'{line}\t| {extra_line}'
+        print(line)
 
         if self.writer is not None:
-            self.writer.add_scalar(f'{self.pred_len}/test/mae', mae, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/test/mse', mse, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/test/rmse', rmse, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/test/mape', mape, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/test/mspe', mspe, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/test/mre', mre, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/test/cov', cov_loss, self.epoch)
+            for k, v in full_metrics.items():
+                self.writer.add_scalar(f'{self.pred_len}/test/{k}', v, self.epoch)
             self.writer.close()
 
-        log_path = "result_long_term_forecast.txt" if not self.args.log_path else self.args.log_path
-        f = open(log_path, 'a')
-        f.write(setting + "\n")
-        f.write('mse:{}, mae:{}, cov:{}'.format(mse, mae, cov_loss))
-        f.write('\n\n')
-        f.close()
+        if self.output_log:
+            log_path = "result_long_term_forecast.txt" if not self.args.log_path else self.args.log_path
+            payload = f"{setting}\n\n{line}\n\n"
+            with open(log_path, mode="a", encoding="utf-8") as f:
+                f.write(payload)
 
-        np.save(os.path.join(res_path, 'metrics.npy'), np.array([mae, mse, cov_loss, rmse, mape, mspe, mre]))
+        # np.save(os.path.join(res_path, 'metrics.npy'), np.array([mae, mse, cov_loss, rmse, mape, mspe, mre]))
+        yaml.safe_dump(dict(full_metrics), open(os.path.join(res_path, 'metrics.yaml'), 'w'), default_flow_style=False, sort_keys=False)
 
         if self.output_pred:
             np.save(os.path.join(res_path, 'input.npy'), inputs.cpu().numpy())
@@ -576,8 +581,6 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
 
         if not test or not os.path.exists(os.path.join(res_path, 'config.yaml')):
             print('save configs')
-            args_dict = vars(self.args)
-            with open(os.path.join(res_path, 'config.yaml'), 'w') as yaml_file:
-                yaml.dump(args_dict, yaml_file, default_flow_style=False)
+            yaml.dump(vars(self.args), open(os.path.join(res_path, 'config.yaml'), 'w'), default_flow_style=False)
 
         return

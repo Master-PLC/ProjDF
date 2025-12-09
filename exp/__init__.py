@@ -9,6 +9,7 @@ from .exp_long_term_forecasting_meta_ml3 import Exp_Long_Term_Forecast_META_ML3
 from .exp_long_term_forecasting_ot import Exp_Long_Term_Forecast_OT
 from .exp_short_term_forecasting import Exp_Short_Term_Forecast
 from .exp_short_term_forecasting_meta_ml3 import Exp_Short_Term_Forecast_META_ML3
+from .exp_long_term_forecasting_gan_dualhead import Exp_Long_Term_Forecast_GAN_DualHead
 from .exp_long_term_forecasting_gan import Exp_Long_Term_Forecast_GAN
 from .exp_long_term_forecasting_iter import Exp_Long_Term_Forecast_Iter
 from .exp_long_term_forecasting_vali import Exp_Long_Term_Forecast_Vali
@@ -26,6 +27,7 @@ EXP_DICT = {
     'long_term_forecast_meta_ml3': Exp_Long_Term_Forecast_META_ML3,
     'long_term_forecast_ot': Exp_Long_Term_Forecast_OT,
     'long_term_forecast_cca_loss': Exp_Long_Term_Forecast_CCA_Loss,
+    'exp_long_term_forecasting_gan_dualhead': Exp_Long_Term_Forecast_GAN_DualHead,
     'long_term_forecast_gan': Exp_Long_Term_Forecast_GAN,
     'long_term_forecast_iter': Exp_Long_Term_Forecast_Iter,
     'long_term_forecast_vali': Exp_Long_Term_Forecast_Vali,

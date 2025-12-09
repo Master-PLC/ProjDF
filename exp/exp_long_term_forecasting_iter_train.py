@@ -1,33 +1,21 @@
 import os
 import time
-import warnings
-
-import numpy as np
-import yaml
-from copy import deepcopy
 import torch
+import warnings
+import yaml
+
+from collections import OrderedDict
+from copy import deepcopy
+import numpy as np
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
-import torch.profiler as profiler
-from data_provider.data_factory import data_provider
+
 from exp.exp_basic import Exp_Basic
 from models import MODEL_REQUIRES_CYCLE
-from torch import optim
-from tslearn.metrics import dtw as dtw2
-from tslearn.metrics import dtw_limited_warping_length
-from utils.dilate_loss import dilate_loss
-from utils.dilate_loss_cuda import DilateLossCUDA
-# from utils.dilate_loss_cache import dilate_loss
-from utils.soft_dtw_cuda import SoftDTW
-from utils.dtw_cuda import DTW
-from utils.dpp_loss import dpp_loss
 from utils.fft_ot import cal_wasserstein
-from utils.fourier_koopman import fourier_loss
-from utils.metrics import metric
-from utils.metrics_torch import create_metric_collector, metric_torch
+from utils.metrics_torch import metric_torch
 from utils.ot_dist import *
-from utils.polynomial import chebyshev_torch, hermite_torch, laguerre_torch, leg_torch, pca_torch, Basis_Cache, ica_torch, robust_ica_torch, robust_pca_torch, svd_torch, random_torch, Random_Cache, fa_torch
-from utils.tools import EarlyStopping, visual, Scheduler, adjust_learning_rate
+from utils.tools import EarlyStopping, visual, Scheduler
 
 warnings.filterwarnings('ignore')
 
@@ -205,29 +193,7 @@ class Exp_Long_Term_Forecast_Iter(Exp_Basic):
 
         return outputs, batch_y, attn
 
-    def vali(self, vali_data, vali_loader, criterion):
-        total_loss = []
-        self.model.eval()
-
-        eval_time = time.time()
-        with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(vali_loader):
-                outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
-
-                pred = outputs.detach()
-                true = batch_y.detach()
-
-                loss = criterion(pred, true)
-
-                total_loss.append(loss)
-
-        print('Validation cost time: {}'.format(time.time() - eval_time))
-        # total_loss = np.average(total_loss)
-        total_loss = torch.mean(torch.stack(total_loss)).item()  # average loss
-        self.model.train()
-        return total_loss
-
-    def train(self, setting, prof=None):
+    def train(self, setting):
         train_data, train_loader = self._get_data(flag='train')
         vali_data, vali_loader = self._get_data(flag='val')
 
@@ -270,11 +236,7 @@ class Exp_Long_Term_Forecast_Iter(Exp_Basic):
 
                 loss = 0
                 if self.args.rec_lambda:
-                    if prof is not None:
-                        with profiler.record_function("rec_loss_forward_pass"):
-                            loss_rec = criterion(outputs, batch_y)
-                    else:
-                        loss_rec = criterion(outputs, batch_y)
+                    loss_rec = criterion(outputs, batch_y)
                     loss += self.args.rec_lambda * loss_rec
                 else:
                     loss_rec = torch.tensor(1e4)
@@ -345,15 +307,8 @@ class Exp_Long_Term_Forecast_Iter(Exp_Basic):
                     time_now = time.time()
                     model_state_last_effective = deepcopy(self.model.state_dict())  # save the last effective model state dict
 
-                if prof is not None:
-                    with profiler.record_function("backward_pass"):
-                        loss.backward()
-                else:
-                    loss.backward()
+                loss.backward()
                 model_optim.step()
-
-                if prof is not None:
-                    prof.step()
 
                 if self.args.lradj in ['TST']:
                     scheduler.step(verbose=(i + 1 == train_steps))
@@ -386,121 +341,3 @@ class Exp_Long_Term_Forecast_Iter(Exp_Basic):
         self.model.load_state_dict(torch.load(best_model_path))
 
         return self.model
-
-    def test(self, setting, prof=None, test=0):
-        test_data, test_loader = self._get_data(flag='test')
-        if test:
-            print('loading model')
-            ckpt_dir = os.path.join(self.args.checkpoints, setting)
-            self.model.load_state_dict(torch.load(os.path.join(ckpt_dir, 'checkpoint.pth')))
-
-        inputs, preds, trues = [], [], []
-        folder_path = os.path.join(self.args.test_results, setting)
-        os.makedirs(folder_path, exist_ok=True)
-
-        self.model.eval()
-        # metric_collector = create_metric_collector(device=self.device)
-        with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(test_loader):
-                outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
-
-                batch_x = batch_x.detach()
-                outputs = outputs.detach()
-                batch_y = batch_y.detach()
-
-                if test_data.scale and self.args.inverse:
-                    batch_x = batch_x.cpu().numpy()
-                    in_shape = batch_x.shape
-                    batch_x = test_data.inverse_transform(batch_x.reshape(-1, in_shape[-1])).reshape(in_shape)
-                    batch_x = torch.from_numpy(batch_x).float().to(self.device)
-
-                    outputs = outputs.cpu().numpy()
-                    batch_y = batch_y.cpu().numpy()
-                    out_shape = outputs.shape
-                    outputs = test_data.inverse_transform(outputs.reshape(-1, out_shape[-1])).reshape(out_shape)
-                    batch_y = test_data.inverse_transform(batch_y.reshape(-1, out_shape[-1])).reshape(out_shape)
-                    outputs = torch.from_numpy(outputs).float().to(self.device)
-                    batch_y = torch.from_numpy(batch_y).float().to(self.device)
-
-                inputs.append(batch_x.cpu())
-                preds.append(outputs.cpu())
-                trues.append(batch_y.cpu())
-
-                if i % 20 == 0 and self.output_vis:
-                    gt = np.concatenate((batch_x[0, :, -1].cpu().numpy(), batch_y[0, :, -1].cpu().numpy()), axis=0)
-                    pd = np.concatenate((batch_x[0, :, -1].cpu().numpy(), outputs[0, :, -1].cpu().numpy()), axis=0)
-                    visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
-
-                if prof is not None:
-                    prof.step()
-
-        inputs = torch.cat(inputs, dim=0)
-        preds = torch.cat(preds, dim=0)
-        trues = torch.cat(trues, dim=0)
-        print('test shape:', preds.shape, trues.shape)
-        inputs = inputs.reshape(-1, inputs.shape[-2], inputs.shape[-1])
-        preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
-        trues = trues.reshape(-1, trues.shape[-2], trues.shape[-1])
-        print('test shape:', preds.shape, trues.shape)
-
-        # result save
-        res_path = os.path.join(self.args.results, setting)
-        os.makedirs(res_path, exist_ok=True)
-        if self.report_to == 'tensorboard' and self.writer is None:
-            self.writer = self._create_writer(res_path)
-
-        # m = metric_collector.compute()
-        # mae, mse, rmse, mape, mspe, mre = m["mae"], m["mse"], m["rmse"], m["mape"], m["mspe"], m["mre"]
-        mae, mse, rmse, mape, mspe, mre = metric_torch(preds, trues)
-        _preds = torch.cat([inputs, preds], dim=1)
-        _trues = torch.cat([inputs, trues], dim=1)
-        ot_dist = cal_wasserstein(
-            _preds, _trues, "wasserstein_empirical_per_dim", ot_type="upper_bound", normalize=1, mask_factor=0.0, 
-            reg_sk=0.005, stopThr=1e-4, numItermax=10000, var_weight=0.00002, mean_weight=1.0, reweight=True
-        )
-        # ot_dist_exact = cal_wasserstein(
-        #     _preds, _trues, "wasserstein_empirical_per_dim", ot_type="exact", normalize=1, mask_factor=0.0, 
-        #     reg_sk=0.005, stopThr=1e-4, numItermax=10000, var_weight=0.00002, mean_weight=1.0, reweight=True
-        # )
-        ot_dist_exact = cal_wasserstein(
-            _preds, _trues, "emd_per_dim", normalize=1, norm_factor='T', mask_factor=0.1, numItermax=10000
-        )
-        wst1d = cal_wasserstein(
-            _preds, _trues, "wasserstein_1d_per_dim"
-        )
-        print('{}\t| mse:{}, mae:{}, ot_dist:{}, ot_dist_exact:{}, wst1d:{}'.format(self.pred_len, mse, mae, ot_dist, ot_dist_exact, wst1d))
-
-        if self.writer is not None:
-            self.writer.add_scalar(f'{self.pred_len}/test/mae', mae, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/test/mse', mse, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/test/rmse', rmse, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/test/mape', mape, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/test/mspe', mspe, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/test/mre', mre, self.epoch)
-            self.writer.close()
-
-        log_path = "result_long_term_forecast.txt" if not self.args.log_path else self.args.log_path
-        f = open(log_path, 'a')
-        f.write(setting + "\n")
-        f.write('mse:{}, mae:{}, ot_dist:{}, ot_dist_exact:{}, wst1d:{}'.format(mse, mae, ot_dist, ot_dist_exact, wst1d))
-        f.write('\n\n')
-        f.close()
-
-        np.save(os.path.join(res_path, 'metrics.npy'), np.array([mae, mse, rmse, mape, mspe, mre, ot_dist, ot_dist_exact, wst1d]))
-
-        if self.output_pred:
-            np.save(os.path.join(res_path, 'input.npy'), inputs.cpu().numpy())
-            np.save(os.path.join(res_path, 'pred.npy'), preds.cpu().numpy())
-            np.save(os.path.join(res_path, 'true.npy'), trues.cpu().numpy())
-            if self.args.auxi_mode == 'basis' and self.args.auxi_type == 'pca':
-                train_data, _ = self._get_data(flag='train')
-                pca_components = train_data.pca_components
-                np.save(os.path.join(res_path, 'pca_components.npy'), pca_components)
-
-        if not test or not os.path.exists(os.path.join(res_path, 'config.yaml')):
-            print('save configs')
-            args_dict = vars(self.args)
-            with open(os.path.join(res_path, 'config.yaml'), 'w') as yaml_file:
-                yaml.dump(args_dict, yaml_file, default_flow_style=False)
-
-        return

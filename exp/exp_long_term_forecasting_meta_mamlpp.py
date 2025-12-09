@@ -1,20 +1,20 @@
 import os
 import time
-import warnings
-from itertools import cycle
-
-import numpy as np
 import torch
-import torch.nn as nn
+import warnings
 import yaml
+
+from collections import OrderedDict
+from itertools import cycle
+import numpy as np
+from torch.func import functional_call
+import torch.nn as nn
+from torch.utils.data import DataLoader
+
 from exp.exp_basic import Exp_Basic
 from models import MODEL_REQUIRES_CYCLE
-from torch.func import functional_call
-from torch.utils.data import DataLoader
-from utils.metrics import metric
-from utils.metrics_torch import create_metric_collector, metric_torch
-from utils.tools import EarlyStopping, Scheduler, clip_grads, disable_grad, enable_grad, log_heatmap, plot_heatmap, \
-    split_dataset, split_dataset_with_overlap, visual
+from utils.metrics_torch import metric_torch
+from utils.tools import EarlyStopping, Scheduler, clip_grads, disable_grad, enable_grad, log_heatmap, plot_heatmap, split_dataset, split_dataset_with_overlap, visual
 
 warnings.filterwarnings('ignore')
 
@@ -308,7 +308,8 @@ class Exp_Long_Term_Forecast_META_MAMLPP(Exp_Basic):
             task_losses = []
 
             meta_lr_cur = A_scheduler.get_lr()
-            self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_lr', meta_lr_cur, self.meta_step)
+            if self.writer is not None:
+                self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_lr', meta_lr_cur, self.meta_step)
 
             self.model.train()
             self.A.train()
@@ -325,7 +326,8 @@ class Exp_Long_Term_Forecast_META_MAMLPP(Exp_Basic):
                 query_loader = query_loader_list[task_id]
                 meta_loss = self.inner_loop(task_id, support_loader, query_loader, n_inner=current_inner_steps)
                 task_losses.append(meta_loss)
-                self.writer.add_scalar(f'{self.pred_len}/meta_train/task_{task_id+1}_meta_loss', meta_loss.item(), self.meta_step)
+                if self.writer is not None:
+                    self.writer.add_scalar(f'{self.pred_len}/meta_train/task_{task_id+1}_meta_loss', meta_loss.item(), self.meta_step)
                 if verbose:
                     print(f"\ttask: {task_id + 1}, total task: {self.num_tasks} | meta loss: {meta_loss.item():.7f}")
 
@@ -336,8 +338,9 @@ class Exp_Long_Term_Forecast_META_MAMLPP(Exp_Basic):
             A_optim.step()
 
             avg_meta_loss_val = avg_meta_loss.item()
-            self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_loss', avg_meta_loss_val, self.meta_step)
-            log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/cov_mat', self.meta_step)
+            if self.writer is not None:
+                self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_loss', avg_meta_loss_val, self.meta_step)
+                log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/cov_mat', self.meta_step)
 
             if verbose:
                 print(f"Step: {self.meta_step} cost time: {time.time() - epoch_time:.2f}s")
@@ -376,7 +379,8 @@ class Exp_Long_Term_Forecast_META_MAMLPP(Exp_Basic):
             train_loss, train_loss_mse = [], []
 
             lr_cur = scheduler.get_lr()
-            self.writer.add_scalar(f'{self.pred_len}/meta_test/lr', lr_cur, self.epoch)
+            if self.writer is not None:
+                self.writer.add_scalar(f'{self.pred_len}/meta_test/lr', lr_cur, self.epoch)
 
             epoch_time = time.time()
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(train_loader):
@@ -396,8 +400,9 @@ class Exp_Long_Term_Forecast_META_MAMLPP(Exp_Basic):
                     loss_mse = criterion(outputs, batch_y)
                 train_loss.append(loss.item())
                 train_loss_mse.append(loss_mse.item())
-                self.writer.add_scalar(f'{self.pred_len}/meta_test_iter/loss', loss.item(), self.step)
-                self.writer.add_scalar(f'{self.pred_len}/meta_test_iter/loss_mse', loss_mse.item(), self.step)
+                if self.writer is not None:
+                    self.writer.add_scalar(f'{self.pred_len}/meta_test_iter/loss', loss.item(), self.step)
+                    self.writer.add_scalar(f'{self.pred_len}/meta_test_iter/loss_mse', loss_mse.item(), self.step)
 
                 if (i + 1) % 100 == 0:
                     print(f"\tMeta Test - iters: {i + 1}, epoch: {self.epoch} | loss: {loss.item():.7f}, mse loss: {loss_mse.item():.7f}")
@@ -416,10 +421,11 @@ class Exp_Long_Term_Forecast_META_MAMLPP(Exp_Basic):
             train_loss_mse = np.average(train_loss_mse)
             valid_loss_mse, valid_loss_cov = self.vali(vali_data, vali_loader, criterion)
 
-            self.writer.add_scalar(f'{self.pred_len}/meta_test/loss_cov', train_loss, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/meta_test/loss_mse', train_loss_mse, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/vali/loss_cov', valid_loss_cov, self.epoch)
-            self.writer.add_scalar(f'{self.pred_len}/vali/loss_mse', valid_loss_mse, self.epoch)
+            if self.writer is not None:
+                self.writer.add_scalar(f'{self.pred_len}/meta_test/loss_cov', train_loss, self.epoch)
+                self.writer.add_scalar(f'{self.pred_len}/meta_test/loss_mse', train_loss_mse, self.epoch)
+                self.writer.add_scalar(f'{self.pred_len}/vali/loss_cov', valid_loss_cov, self.epoch)
+                self.writer.add_scalar(f'{self.pred_len}/vali/loss_mse', valid_loss_mse, self.epoch)
 
             print(f"Epoch: {self.epoch} | Train Loss Cov: {train_loss:.7f}, MSE: {train_loss_mse:.7f} | Valid Loss Cov: {valid_loss_cov:.7f}, MSE: {valid_loss_mse:.7f}")
             early_stopping(valid_loss_mse, self.model, path)
@@ -430,7 +436,7 @@ class Exp_Long_Term_Forecast_META_MAMLPP(Exp_Basic):
             if self.args.lradj not in ['TST']:
                 scheduler.step(valid_loss_mse, self.epoch)
 
-    def train(self, setting, prof=None):
+    def train(self, setting):
         train_data, train_loader = self._get_data(flag='train')
         support_loader_list, query_loader_list = self.initialize_meta_tasks(train_data)
         vali_data, vali_loader = self._get_data(flag='val')
@@ -439,7 +445,8 @@ class Exp_Long_Term_Forecast_META_MAMLPP(Exp_Basic):
         os.makedirs(path, exist_ok=True)
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        self.writer = self._create_writer(res_path)
+        if self.report_to == 'tensorboard':
+            self.writer = self._create_writer(res_path)
 
         criterion = self._select_criterion()
 
@@ -460,7 +467,7 @@ class Exp_Long_Term_Forecast_META_MAMLPP(Exp_Basic):
 
         return self.model
 
-    def test(self, setting, prof=None, test=0):
+    def test(self, setting, test=0):
         test_data, test_loader = self._get_data(flag='test')
         if test:
             print('loading model')
@@ -469,12 +476,12 @@ class Exp_Long_Term_Forecast_META_MAMLPP(Exp_Basic):
             self.A = torch.load(os.path.join(ckpt_dir, 'A.pth'))
 
         inputs, preds, trues = [], [], []
-        folder_path = os.path.join(self.args.test_results, setting)
-        os.makedirs(folder_path, exist_ok=True)
+        if self.output_vis:
+            folder_path = os.path.join(self.args.test_results, setting)
+            os.makedirs(folder_path, exist_ok=True)
 
         self.model.eval()
         self.A.eval()
-        # metric_collector = create_metric_collector(device=self.device)
         with torch.no_grad():
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(test_loader):
                 outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
@@ -518,34 +525,41 @@ class Exp_Long_Term_Forecast_META_MAMLPP(Exp_Basic):
         # result save
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        if self.writer is None:
+        if self.report_to == 'tensorboard' and self.writer is None:
             self.writer = self._create_writer(res_path)
 
-        # m = metric_collector.compute()
-        # mae, mse, rmse, mape, mspe, mre = m["mae"], m["mse"], m["rmse"], m["mape"], m["mspe"], m["mre"]
+        metrics = OrderedDict()
         mae, mse, rmse, mape, mspe, mre = metric_torch(preds, trues)
-        with torch.no_grad():
-            self.A.to(preds.device)
-            cov_loss = self.A.get_loss(preds, trues)
-        print('{}\t| mse:{}, mae:{}, cov:{}'.format(self.pred_len, mse, mae, cov_loss))
+        metrics['mae'] = mae; metrics['mse'] = mse; metrics['rmse'] = rmse; metrics['mape'] = mape; metrics['mspe'] = mspe; metrics['mre'] = mre
 
-        self.writer.add_scalar(f'{self.pred_len}/test/mae', mae, self.epoch)
-        self.writer.add_scalar(f'{self.pred_len}/test/mse', mse, self.epoch)
-        self.writer.add_scalar(f'{self.pred_len}/test/rmse', rmse, self.epoch)
-        self.writer.add_scalar(f'{self.pred_len}/test/mape', mape, self.epoch)
-        self.writer.add_scalar(f'{self.pred_len}/test/mspe', mspe, self.epoch)
-        self.writer.add_scalar(f'{self.pred_len}/test/mre', mre, self.epoch)
-        self.writer.add_scalar(f'{self.pred_len}/test/cov', cov_loss, self.epoch)
-        self.writer.close()
+        extra_metrics = OrderedDict()
+        if self.args.extra_metrics != []:
+            if 'cov' in self.args.extra_metrics:
+                with torch.no_grad():
+                    self.A.to(preds.device)
+                    cov_loss = self.A.get_loss(preds, trues)
+                extra_metrics['cov'] = cov_loss.item()
 
-        log_path = "result_long_term_forecast.txt" if not self.args.log_path else self.args.log_path
-        f = open(log_path, 'a')
-        f.write(setting + "\n")
-        f.write('mse:{}, mae:{}, cov:{}'.format(mse, mae, cov_loss))
-        f.write('\n\n')
-        f.close()
+        full_metrics = OrderedDict(**metrics, **extra_metrics)
+        line = f'{self.args.data_id} @ {self.pred_len}\t| mse:{mse} mae:{mae}'
+        if self.args.extra_metrics != []:
+            extra_line = ', '.join([f'{k}:{v}' for k, v in extra_metrics.items()])
+            line = f'{line}\t| {extra_line}'
+        print(line)
 
-        np.save(os.path.join(res_path, 'metrics.npy'), np.array([mae, mse, cov_loss, rmse, mape, mspe, mre]))
+        if self.writer is not None:
+            for k, v in full_metrics.items():
+                self.writer.add_scalar(f'{self.pred_len}/test/{k}', v, self.epoch)
+            self.writer.close()
+
+        if self.output_log:
+            log_path = "result_long_term_forecast.txt" if not self.args.log_path else self.args.log_path
+            payload = f"{setting}\n\n{line}\n\n"
+            with open(log_path, mode="a", encoding="utf-8") as f:
+                f.write(payload)
+
+        # np.save(os.path.join(res_path, 'metrics.npy'), np.array([mae, mse, cov_loss, rmse, mape, mspe, mre]))
+        yaml.safe_dump(dict(full_metrics), open(os.path.join(res_path, 'metrics.yaml'), 'w'), default_flow_style=False, sort_keys=False)
 
         if self.output_pred:
             np.save(os.path.join(res_path, 'input.npy'), inputs.cpu().numpy())
@@ -554,8 +568,6 @@ class Exp_Long_Term_Forecast_META_MAMLPP(Exp_Basic):
 
         if not test or not os.path.exists(os.path.join(res_path, 'config.yaml')):
             print('save configs')
-            args_dict = vars(self.args)
-            with open(os.path.join(res_path, 'config.yaml'), 'w') as yaml_file:
-                yaml.dump(args_dict, yaml_file, default_flow_style=False)
+            yaml.dump(vars(self.args), open(os.path.join(res_path, 'config.yaml'), 'w'), default_flow_style=False)
 
         return

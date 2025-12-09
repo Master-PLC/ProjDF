@@ -7,7 +7,6 @@ import yaml
 import numpy as np
 from torch.cuda.amp import autocast, GradScaler
 import torch.nn as nn
-from torch.nn.utils import spectral_norm as SpectralNorm
 
 from exp.exp_basic import Exp_Basic
 from utils.tools import EarlyStopping, Scheduler
@@ -15,44 +14,60 @@ from utils.tools import EarlyStopping, Scheduler
 warnings.filterwarnings('ignore')
 
 
-def add_sn(layer, specral_norm=False):
-    return SpectralNorm(layer) if specral_norm else layer
-
-
 class Discriminator(nn.Module):
     def __init__(self, args):
         super().__init__()
-        self.ind_discr = args.ind_discr
-        spectral_norm = args.spectral_norm
         window = args.seq_len + args.pred_len
-        self.head = nn.Sequential(
-            add_sn(nn.Linear(window, 512), spectral_norm),
+        self.tmp_head = nn.Sequential(
+            nn.Linear(window, 512),
             nn.LeakyReLU(0.2, inplace=True),
         )
-        self.seq_processor = nn.Sequential(
-            add_sn(nn.Linear(512, 128), spectral_norm),
+        self.feq_head = nn.Sequential(
+            nn.Linear(window // 2 + 1, 512),
             nn.LeakyReLU(0.2, inplace=True),
-            add_sn(nn.Linear(128, 1), spectral_norm),
-            nn.LeakyReLU(0.2, inplace=True)
         )
-        self.var_processor = add_sn(nn.Linear(args.c_out, 1), spectral_norm)
+        self.ind_discr = args.ind_discr
+        if self.ind_discr:
+            self.seq_processor = nn.ModuleList([
+                nn.Sequential(
+                    nn.Linear(512, 128), nn.LeakyReLU(0.2, inplace=True),
+                    nn.Linear(128, 1), nn.LeakyReLU(0.2, inplace=True),
+                ) for _ in range(2)
+            ])
+            self.var_processor = nn.ModuleList([nn.Linear(args.c_out, 1) for _ in range(2)])
+        else:
+            self.seq_processor = nn.Sequential(
+                nn.Linear(512, 128), nn.LeakyReLU(0.2, inplace=True),
+                nn.Linear(128, 1), nn.LeakyReLU(0.2, inplace=True),
+            )
+            self.var_processor = nn.Linear(args.c_out, 1)
 
     def forward(self, z):
         z = z.transpose(1, 2)
-        z = self.head(z)
-        z = self.seq_processor(z).squeeze()
-        score = self.var_processor(z)
-        return score
+        tmp_z = self.tmp_head(z)
+        feq_z = torch.fft.rfft(z, dim=-1).abs()
+        feq_z = self.feq_head(feq_z)
+
+        if self.ind_discr:
+            tmp_z = self.seq_processor[0](tmp_z).squeeze()
+            feq_z = self.seq_processor[1](feq_z).squeeze()
+            tmp_score = self.var_processor[0](tmp_z)
+            feq_score = self.var_processor[1](feq_z)
+        else:
+            tmp_z = self.seq_processor(tmp_z).squeeze()
+            feq_z = self.seq_processor(feq_z).squeeze()
+            tmp_score = self.var_processor(tmp_z)
+            feq_score = self.var_processor(feq_z)
+        return tmp_score, feq_score
 
 
-class Exp_Long_Term_Forecast_GAN(Exp_Basic):
+class Exp_Long_Term_Forecast_GAN_DualHead(Exp_Basic):
     def __init__(self, args):
         super().__init__(args)
         self.pred_len = args.pred_len
         self.label_len = args.label_len
         self.discriminator = Discriminator(args).to(self.device)
         self.view_lambda = args.view_lambda
-        self.label_smoothing = args.label_smoothing
         assert args.auxi_lambda
         # if not self.use_amp:
         #     self.model = torch.compile(self.model)
@@ -112,12 +127,8 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
                 self.step += 1
                 iter_count += 1
 
-                if 0 < self.label_smoothing < 1:
-                    real = torch.ones(self.args.batch_size, 1, device=self.device) * (1 - self.label_smoothing)
-                    fake = torch.ones(self.args.batch_size, 1, device=self.device) * self.label_smoothing
-                else:
-                    real = torch.ones(self.args.batch_size, 1, device=self.device)
-                    fake = torch.zeros(self.args.batch_size, 1, device=self.device)
+                real = torch.ones(self.args.batch_size, 1, device=self.device)
+                fake = torch.zeros(self.args.batch_size, 1, device=self.device)
 
                 #-------------------------------------------------------------------
                 # Train the generator 
@@ -134,8 +145,10 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
                     batch_y = torch.concat((batch_x.to(batch_y.device), batch_y), dim=1).float()  # [B, S+P, D]
 
                     with autocast():
-                        score = self.discriminator(outputs)
-                        loss_auxi = criterion_D(score, real)
+                        tmp_score, feq_score = self.discriminator(outputs)
+                        tmp_loss = criterion_D(tmp_score, real)
+                        feq_loss = criterion_D(feq_score, real)
+                        loss_auxi = self.view_lambda * tmp_loss + (1 - self.view_lambda) * feq_loss
                         loss += self.args.auxi_lambda * loss_auxi
 
                     optimizer_G.zero_grad()
@@ -151,8 +164,10 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
                     outputs = torch.concat((batch_x.to(outputs.device), outputs), dim=1).float()  # [B, S+P, D]
                     batch_y = torch.concat((batch_x.to(batch_y.device), batch_y), dim=1).float()  # [B, S+P, D]
 
-                    score = self.discriminator(outputs)
-                    loss_auxi = criterion_D(score, real)
+                    tmp_score, feq_score = self.discriminator(outputs)
+                    tmp_loss = criterion_D(tmp_score, real)
+                    feq_loss = criterion_D(feq_score, real)
+                    loss_auxi = self.view_lambda * tmp_loss + (1 - self.view_lambda) * feq_loss
                     loss += self.args.auxi_lambda * loss_auxi
 
                     optimizer_G.zero_grad()
@@ -164,9 +179,7 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
                 train_loss_G.append(loss.item())
 
                 if self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/train_G_iter/loss_rec', loss_rec.item(), self.step)
-                    self.writer.add_scalar(f'{self.pred_len}/train_G_iter/loss_auxi', loss_auxi.item(), self.step)
-                    self.writer.add_scalar(f'{self.pred_len}/train_G_iter/loss', loss.item(), self.step)
+                    self.writer.add_scalar(f'{self.pred_len}/train_G/loss_iter', loss.item(), self.step)
 
                 #-------------------------------------------------------------------
                 # Train the discriminator
@@ -174,24 +187,34 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
                 loss = 0
                 if self.use_amp:
                     with autocast():
-                        real_score = self.discriminator(batch_y)
-                        real_loss = criterion_D(real_score, real)
+                        real_tmp_score, real_feq_score = self.discriminator(batch_y)
+                        real_tmp_loss = criterion_D(real_tmp_score, real)
+                        real_feq_loss = criterion_D(real_feq_score, real)
+                        real_loss = self.view_lambda * real_tmp_loss + (1 - self.view_lambda) * real_feq_loss
+                        loss += 0.5 * real_loss
 
-                        fake_score = self.discriminator(outputs.detach())
-                        fake_loss = criterion_D(fake_score, fake)
-                        loss += 0.5 * real_loss + 0.5 * fake_loss
+                        fake_tmp_score, fake_feq_score = self.discriminator(outputs.detach())
+                        fake_tmp_loss = criterion_D(fake_tmp_score, fake)
+                        fake_feq_loss = criterion_D(fake_feq_score, fake)
+                        fake_loss = self.view_lambda * fake_tmp_loss + (1 - self.view_lambda) * fake_feq_loss
+                        loss += 0.5 * fake_loss
 
                     optimizer_D.zero_grad()
                     scaler_D.scale(loss).backward()
                     scaler_D.step(optimizer_D)
                     scaler_D.update()
                 else:
-                    real_score = self.discriminator(batch_y)
-                    real_loss = criterion_D(real_score, real)
+                    real_tmp_score, real_feq_score = self.discriminator(batch_y)
+                    real_tmp_loss = criterion_D(real_tmp_score, real)
+                    real_feq_loss = criterion_D(real_feq_score, real)
+                    real_loss = self.view_lambda * real_tmp_loss + (1 - self.view_lambda) * real_feq_loss
+                    loss += 0.5 * real_loss
 
-                    fake_score = self.discriminator(outputs.detach())
-                    fake_loss = criterion_D(fake_score, fake)
-                    loss += 0.5 * real_loss + 0.5 * fake_loss
+                    fake_tmp_score, fake_feq_score = self.discriminator(outputs.detach())
+                    fake_tmp_loss = criterion_D(fake_tmp_score, fake)
+                    fake_feq_loss = criterion_D(fake_feq_score, fake)
+                    fake_loss = self.view_lambda * fake_tmp_loss + (1 - self.view_lambda) * fake_feq_loss
+                    loss += 0.5 * fake_loss
 
                     optimizer_D.zero_grad()
                     loss.backward()
@@ -202,9 +225,7 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
                 train_loss_D.append(loss.item())
 
                 if self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/train_D_iter/loss_real', real_loss.item(), self.step)
-                    self.writer.add_scalar(f'{self.pred_len}/train_D_iter/loss_fake', fake_loss.item(), self.step)
-                    self.writer.add_scalar(f'{self.pred_len}/train_D_iter/loss', loss.item(), self.step)
+                    self.writer.add_scalar(f'{self.pred_len}/train_D/loss_iter', loss, self.step)
 
                 if (i + 1) % 100 == 0:
                     print(

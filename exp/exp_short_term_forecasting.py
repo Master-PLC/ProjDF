@@ -1,27 +1,26 @@
-import glob
 import os
+import pandas
 import pickle
 import time
+import torch
 import warnings
-
-import numpy as np
-import pandas
 import yaml
 
-import torch
+import numpy as np
+from torch import optim
 import torch.nn as nn
+
 from data_provider.data_factory import data_provider
 from data_provider.m4 import M4Meta
 from exp.exp_basic import Exp_Basic
 from models import MODEL_REQUIRES_CYCLE
-from torch import optim
-from utils.soft_dtw_cuda import SoftDTW
 from utils.fft_ot import cal_wasserstein
 from utils.fourier_koopman import fourier_loss
 from utils.losses import mape_loss, mase_loss, smape_loss
 from utils.m4_summary import M4Summary
 from utils.ot_dist import *
 from utils.polynomial import chebyshev_torch, hermite_torch, laguerre_torch, leg_torch, pca_torch, Basis_Cache
+from utils.soft_dtw_cuda import SoftDTW
 from utils.tools import EarlyStopping, Scheduler, adjust_learning_rate, visual
 
 warnings.filterwarnings('ignore')
@@ -92,7 +91,7 @@ class Exp_Short_Term_Forecast(Exp_Basic):
         batch_y = batch_y[:, -self.pred_len:, f_dim:]
         return outputs, batch_y, attn
 
-    def train(self, setting, prof=None):
+    def train(self, setting):
         train_data, train_loader = self._get_data(flag='train')
         cache = self.initialize_cache(train_data)
         vali_data, vali_loader = self._get_data(flag='val')
@@ -320,8 +319,9 @@ class Exp_Short_Term_Forecast(Exp_Basic):
             ckpt_dir = os.path.join(self.args.checkpoints, setting)
             self.model.load_state_dict(torch.load(os.path.join(ckpt_dir, 'checkpoint.pth')))
 
-        folder_path = os.path.join(self.args.test_results, setting)
-        os.makedirs(folder_path, exist_ok=True)
+        if self.output_vis:
+            folder_path = os.path.join(self.args.test_results, setting)
+            os.makedirs(folder_path, exist_ok=True)
 
         self.model.eval()
         with torch.no_grad():
@@ -354,7 +354,7 @@ class Exp_Short_Term_Forecast(Exp_Basic):
             trues = torch.from_numpy(np.array(y)).to(self.device)
             x = x.detach()
 
-            if self.args.output_vis:
+            if self.output_vis:
                 for i in range(0, preds.shape[0], preds.shape[0] // 10):
                     gt = np.concatenate((x[i, :, 0].cpu().numpy(), trues[i].cpu().numpy()), axis=0)
                     pd = np.concatenate((x[i, :, 0].cpu().numpy(), preds[i, :, 0].cpu().numpy()), axis=0)
@@ -367,8 +367,6 @@ class Exp_Short_Term_Forecast(Exp_Basic):
         os.makedirs(res_path, exist_ok=True)
         summary_path = os.path.join(self.args.results, "m4_results")
         os.makedirs(summary_path, exist_ok=True)
-        if self.report_to == 'tensorboard' and self.writer is None:
-            self.writer = self._create_writer(res_path)
 
         forecasts_df = pandas.DataFrame(preds[:, :, 0].cpu().numpy(), columns=[f'V{i+1}' for i in range(self.pred_len)])
         forecasts_df.index = test_loader.dataset.ids[:preds.shape[0]]
@@ -377,12 +375,7 @@ class Exp_Short_Term_Forecast(Exp_Basic):
         forecasts_df.to_csv(os.path.join(summary_path, self.seasonal_patterns + '_forecast.csv'))
 
         filenames = os.listdir(summary_path)
-        if 'Weekly_forecast.csv' in filenames \
-            and 'Monthly_forecast.csv' in filenames \
-            and 'Yearly_forecast.csv' in filenames \
-            and 'Daily_forecast.csv' in filenames \
-            and 'Hourly_forecast.csv' in filenames \
-            and 'Quarterly_forecast.csv' in filenames:
+        if all([f"{x}_forecast.csv" in filenames for x in M4Meta.seasonal_patterns]):
             m4_summary = M4Summary(summary_path, self.args.root_path)
             # m4_forecast.set_index(m4_winner_forecast.columns[0], inplace=True)
             smape_results, owa_results, mape, mase = m4_summary.evaluate()
@@ -392,19 +385,16 @@ class Exp_Short_Term_Forecast(Exp_Basic):
                 "mase": mase,
                 "owa": owa_results
             }
-            for k, v in metrics.items():
-                print(f"{k}: {v}")
+            line = "\n".join([f"{k}: {v}" for k, v in metrics.items()])
+            print(line)
 
-            with open(os.path.join(summary_path, "metrics.pkl"), 'wb') as wt:
-                pickle.dump(metrics, wt)
+            pickle.dump(metrics, open(os.path.join(summary_path, "metrics.pkl"), 'wb'))
 
-            log_path = "result_short_term_forecast.txt" if not self.args.log_path else self.args.log_path
-            f = open(log_path, 'a')
-            f.write(setting + "\n")
-            for k, v in metrics.items():
-                f.write(f"{k}: {v}\n")
-            f.write('\n\n')
-            f.close()
+            if self.output_log:
+                log_path = "result_short_term_forecast.txt" if not self.args.log_path else self.args.log_path
+                payload = f"{setting}\n\n{line}\n\n"
+                with open(log_path, mode="a", encoding="utf-8") as f:
+                    f.write(payload)
 
         else:
             print('After all 6 tasks are finished, you can calculate the averaged index')
@@ -414,8 +404,6 @@ class Exp_Short_Term_Forecast(Exp_Basic):
 
         if not test or not os.path.exists(os.path.join(res_path, 'config.yaml')):
             print('save configs')
-            args_dict = vars(self.args)
-            with open(os.path.join(res_path, 'config.yaml'), 'w') as yaml_file:
-                yaml.dump(args_dict, yaml_file, default_flow_style=False)
+            yaml.dump(vars(self.args), open(os.path.join(res_path, 'config.yaml'), 'w'), default_flow_style=False)
 
         return
