@@ -15,6 +15,7 @@ from utils.dpp_loss import dpp_loss
 from utils.dtw_cuda import DTW
 from utils.fft_ot import cal_wasserstein
 from utils.fourier_koopman import fourier_loss
+from utils.kernel_balancing import akb_loss, wkb_loss, rkb_loss
 from utils.ldtw_cuda import LDTW
 from utils.ot_dist import *
 from utils.polynomial import chebyshev_torch, hermite_torch, laguerre_torch, leg_torch, pca_torch, Basis_Cache, ica_torch, robust_ica_torch, robust_pca_torch, svd_torch, random_torch, Random_Cache, fa_torch
@@ -128,16 +129,14 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     loss += self.args.rec_lambda * loss_rec
                 else:
                     loss_rec = torch.tensor(1e4)
-                if self.step % self.log_step == 0 and self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', loss_rec, self.step)
 
                 if self.args.l1_weight and attn:
                     loss += self.args.l1_weight * attn[0]
 
                 if self.args.auxi_lambda:
                     if self.args.joint_forecast:  # joint distribution forecasting
-                        outputs = torch.concat((batch_x.to(outputs.device), outputs), dim=1)  # [B, S+P, D]
-                        batch_y = torch.concat((batch_x.to(batch_y.device), batch_y), dim=1)  # [B, S+P, D]
+                        outputs = torch.concat((batch_x.to(outputs.device).float(), outputs), dim=1)  # [B, S+P, D]
+                        batch_y = torch.concat((batch_x.to(batch_y.device).float(), batch_y), dim=1)  # [B, S+P, D]
 
                     if self.args.auxi_mode == "fft":
                         loss_auxi = torch.fft.fft(outputs, dim=1) - torch.fft.fft(batch_y, dim=1)  # shape: [B, P, D]
@@ -305,6 +304,20 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
                     elif self.args.auxi_mode == "dilate_cuda":
                         loss_auxi = dilate_cuda(outputs, batch_y)
+                    
+                    elif self.args.auxi_mode == "kernel_balancing":
+                        kwargs = {
+                            'kernel_type': self.args.kernel_type, 'gamma': self.args.gamma, 'J': self.args.J,
+                            'inner_lr': self.args.inner_lr, 'inner_steps': self.args.meta_inner_steps, 'optim_type': self.args.meta_optim_type
+                        }
+                        if self.args.auxi_type == "akb":
+                            loss_auxi = akb_loss(outputs, batch_y, **kwargs)
+                        elif self.args.auxi_type == "wkb":
+                            loss_auxi = wkb_loss(outputs, batch_y, **kwargs)
+                        elif self.args.auxi_type == "rkb":
+                            loss_auxi = rkb_loss(outputs, batch_y, **kwargs)
+                        else:
+                            raise NotImplementedError
 
                     else:
                         raise NotImplementedError
@@ -326,8 +339,6 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     loss += self.args.auxi_lambda * loss_auxi
                 else:
                     loss_auxi = torch.tensor(1e4)
-                if self.step % self.log_step == 0 and self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', loss_auxi, self.step)
 
                 if torch.isnan(loss) or torch.isinf(loss):
                     print(f"Loss is NaN or Inf, skipping epoch {self.epoch} step {self.step}")
@@ -336,7 +347,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
                 train_loss.append(loss.item())
                 if self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/train/loss_iter', loss.item(), self.step)
+                    self.writer.add_scalar(f'{self.pred_len}/train_iter/loss_rec', loss_rec.item(), self.step)
+                    self.writer.add_scalar(f'{self.pred_len}/train_iter/loss_auxi', loss_auxi.item(), self.step)
+                    self.writer.add_scalar(f'{self.pred_len}/train_iter/loss', loss.item(), self.step)
 
                 if (i + 1) % 100 == 0:
                     print(

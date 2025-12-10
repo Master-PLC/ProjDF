@@ -295,6 +295,10 @@ if __name__ == '__main__':
     parser.add_argument('--spectral_norm', type=int, default=0, help='spectral norm')
     parser.add_argument('--label_smoothing', type=float, default=0, help='label smoothing')
 
+    # KernelDF
+    parser.add_argument('--kernel_type', type=str, default='gau', help='kernel type')
+    parser.add_argument('--J', type=int, default=3, help='J')
+
     args = parser.parse_args()
 
     fix_seed = args.fix_seed

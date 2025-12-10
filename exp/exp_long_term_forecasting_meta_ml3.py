@@ -541,9 +541,8 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
         if self.writer is None and self.report_to != 'None':
             self.writer = self._create_writer(res_path)
 
-        metrics = OrderedDict()
         mae, mse, rmse, mape, mspe, mre = metric_torch(preds, trues)
-        metrics['mae'] = mae; metrics['mse'] = mse; metrics['rmse'] = rmse; metrics['mape'] = mape; metrics['mspe'] = mspe; metrics['mre'] = mre
+        metrics = OrderedDict(zip(['mae', 'mse', 'rmse', 'mape', 'mspe', 'mre'], [mae, mse, rmse, mape, mspe, mre]))
 
         extra_metrics = OrderedDict()
         if self.args.extra_metrics != []:
