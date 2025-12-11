@@ -7,6 +7,7 @@ import yaml
 import numpy as np
 from torch.cuda.amp import autocast, GradScaler
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.nn.utils import spectral_norm as SpectralNorm
 
 from exp.exp_basic import Exp_Basic
@@ -25,23 +26,18 @@ class Discriminator(nn.Module):
         self.ind_discr = args.ind_discr
         spectral_norm = args.spectral_norm
         window = args.seq_len + args.pred_len
-        self.head = nn.Sequential(
-            add_sn(nn.Linear(window, 512), spectral_norm),
-            nn.LeakyReLU(0.2, inplace=True),
-        )
-        self.seq_processor = nn.Sequential(
-            add_sn(nn.Linear(512, 128), spectral_norm),
-            nn.LeakyReLU(0.2, inplace=True),
-            add_sn(nn.Linear(128, 1), spectral_norm),
-            nn.LeakyReLU(0.2, inplace=True)
+        hidden_dims = [window] + list(map(int, args.hidden_dims.split(',')))
+        self.seq_processor = nn.ModuleList(
+            add_sn(nn.Linear(hidden_dims[i], hidden_dims[i + 1], spectral_norm))
+            for i in range(len(hidden_dims) - 1)
         )
         self.var_processor = add_sn(nn.Linear(args.c_out, 1), spectral_norm)
 
     def forward(self, z):
         z = z.transpose(1, 2)
-        z = self.head(z)
-        z = self.seq_processor(z).squeeze()
-        score = self.var_processor(z)
+        for layer in self.seq_processor:
+            z = F.leaky_relu(layer(z), 0.2)
+        score = self.var_processor(z.squeeze())
         return score
 
 
@@ -55,31 +51,82 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
         self.label_smoothing = args.label_smoothing
         self.adversarial_learning = False
         assert args.auxi_lambda
-        # if not self.use_amp:
-        #     self.model = torch.compile(self.model)
-        #     self.discriminator = torch.compile(self.discriminator)
 
-    def check_adversarial_learning(self):
-        if self.args.fixed_step and self.step > self.args.fixed_step and not self.adversarial_learning:
-            print(f"\n>>>>>>>Adversarial learning enabled at step {self.step}, epoch {self.epoch}\n")
-            self.adversarial_learning = True
+    def train_generator(self, train_data, train_loader, vali_data, vali_loader, path):
+        time_now = time.time()
+        train_steps = len(train_loader)
+        early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 
-    def train(self, setting):
-        train_data, train_loader = self._get_data(flag='train')
-        vali_data, vali_loader = self._get_data(flag='val')
+        model_optim = self._select_optimizer()
+        scheduler = Scheduler(model_optim, self.args, train_steps)
+        criterion = self._select_criterion()
 
-        path = os.path.join(self.args.checkpoints, setting)
-        os.makedirs(path, exist_ok=True)
-        res_path = os.path.join(self.args.results, setting)
-        os.makedirs(res_path, exist_ok=True)
-        if self.report_to != 'None':
-            self.writer = self._create_writer(res_path)
+        for epoch in range(self.args.train_epochs):
+            self.epoch = epoch + 1
+            iter_count = 0
+            has_nan_in_epoch = False
+            train_loss = []
+
+            lr_cur = scheduler.get_lr()
+            lr_cur = lr_cur[0] if isinstance(lr_cur, list) else lr_cur
+            self.writer.add_scalar(f'{self.pred_len}/pretrain_G/lr', lr_cur, self.epoch)
+
+            self.model.train()
+            epoch_time = time.time()
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(train_loader):
+                self.step += 1
+                iter_count += 1
+                model_optim.zero_grad()
+
+                outputs, batch_y, attn = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
+
+                loss = criterion(outputs, batch_y)
+
+                train_loss.append(loss.item())
+                self.writer.add_scalar(f'{self.pred_len}/pretrain_G_iter/loss', loss.item(), self.step)
+
+                if (i + 1) % 100 == 0:
+                    print("\titers: {}, epoch: {} | loss: {:.7f}".format(i + 1, self.epoch, loss.item()))
+                    cost_time = time.time() - time_now
+                    speed = cost_time / iter_count
+                    left_time = speed * ((self.args.train_epochs - epoch) * train_steps - i)
+                    print('\tspeed: {:.4f}s/iter; cost time: {:.4f}s; left time: {:.4f}s'.format(speed, cost_time, left_time))
+                    iter_count = 0
+                    time_now = time.time()
+
+                loss.backward()
+                model_optim.step()
+
+                if self.args.lradj in ['TST']:
+                    scheduler.step(verbose=(i + 1 == train_steps))
+
+            print("Epoch: {} cost time: {}".format(self.epoch, time.time() - epoch_time))
+            train_loss = np.average(train_loss)
+            vali_loss = self.vali(vali_data, vali_loader, criterion)
+
+            self.writer.add_scalar(f'{self.pred_len}/pretrain_G/loss', train_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/prevali/loss', vali_loss, self.epoch)
+
+            print(
+                "Epoch: {}, Steps: {} | Train Loss: {:.7f} Vali Loss: {:.7f}".format(
+                    self.epoch, self.step, train_loss, vali_loss
+                )
+            )
+            early_stopping(vali_loss, self.model, path)
+            if early_stopping.early_stop:
+                print("Early stopping")
+                break
+
+            if self.args.lradj not in ['TST']:
+                scheduler.step(vali_loss, self.epoch)
+
+    def train_adversarial(self, train_data, train_loader, vali_data, vali_loader, path):
+        self.epoch = 0
+        self.step = 0
+        self.args.learned_from_method = False
 
         time_now = time.time()
-
         train_steps = len(train_loader)
-        model_state_last_effective = None
-        discr_state_last_effective = None
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 
         optimizer_G = self._select_optimizer()
@@ -106,9 +153,8 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
             lr_cur_G = lr_cur_G[0] if isinstance(lr_cur_G, list) else lr_cur_G
             lr_cur_D = scheduler_D.get_lr()
             lr_cur_D = lr_cur_D[0] if isinstance(lr_cur_D, list) else lr_cur_D
-            if self.writer is not None:
-                self.writer.add_scalar(f'{self.pred_len}/train_G/lr', lr_cur_G, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/train_D/lr', lr_cur_D, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train_G/lr', lr_cur_G, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train_D/lr', lr_cur_D, self.epoch)
 
             self.model.train()
             self.discriminator.train()
@@ -125,82 +171,18 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
                     real = torch.ones(self.args.batch_size, 1, device=self.device)
                     fake = torch.zeros(self.args.batch_size, 1, device=self.device)
 
-                self.check_adversarial_learning()
-
-                #-------------------------------------------------------------------
-                # Train the generator 
-                #-------------------------------------------------------------------
-                loss = 0
-                if self.use_amp:
-                    with autocast():
-                        outputs, batch_y, attn = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
-
-                        loss_rec = criterion_G(outputs, batch_y)
-                        loss += self.args.rec_lambda * loss_rec if self.adversarial_learning else loss_rec
-
-                    if self.adversarial_learning:
-                        outputs = torch.concat((batch_x.to(outputs.device), outputs), dim=1).float()  # [B, S+P, D]
-                        batch_y = torch.concat((batch_x.to(batch_y.device), batch_y), dim=1).float()  # [B, S+P, D]
-
-                        with autocast():
-                            score = self.discriminator(outputs)
-                            loss_auxi = criterion_D(score, real)
-                            loss += self.args.auxi_lambda * loss_auxi
-                    else:
-                        loss_auxi = torch.tensor(1e4, device=self.device)
-
-                    optimizer_G.zero_grad()
-                    scaler_G.scale(loss).backward()
-                    scaler_G.step(optimizer_G)
-                    scaler_G.update()
-                else:
-                    outputs, batch_y, attn = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
-
-                    loss_rec = criterion_G(outputs, batch_y)
-                    loss += self.args.rec_lambda * loss_rec if self.adversarial_learning else loss_rec
-
-                    if self.adversarial_learning:
-                        outputs = torch.concat((batch_x.to(outputs.device), outputs), dim=1).float()  # [B, S+P, D]
-                        batch_y = torch.concat((batch_x.to(batch_y.device), batch_y), dim=1).float()  # [B, S+P, D]
-
-                        score = self.discriminator(outputs)
-                        loss_auxi = criterion_D(score, real)
-                        loss += self.args.auxi_lambda * loss_auxi
-                    else:
-                        loss_auxi = torch.tensor(1e4, device=self.device)
-
-                    optimizer_G.zero_grad()
-                    loss.backward()
-                    optimizer_G.step()
-
-                rec_losses.append(loss_rec.item())
-                auxi_losses.append(loss_auxi.item())
-                train_loss_G.append(loss.item())
-
-                if self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/train_G_iter/loss_rec', loss_rec.item(), self.step)
-                    self.writer.add_scalar(f'{self.pred_len}/train_G_iter/loss_auxi', loss_auxi.item(), self.step)
-                    self.writer.add_scalar(f'{self.pred_len}/train_G_iter/loss', loss.item(), self.step)
-
                 #-------------------------------------------------------------------
                 # Train the discriminator
                 #-------------------------------------------------------------------
+                with torch.no_grad():
+                    outputs, batch_y, attn = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
+                    outputs = torch.concat((batch_x.to(outputs.device), outputs), dim=1).float()  # [B, S+P, D]
+                    batch_y = torch.concat((batch_x.to(batch_y.device), batch_y), dim=1).float()  # [B, S+P, D]
+
                 loss = 0
-                if self.adversarial_learning:
-                    if self.use_amp:
-                        with autocast():
-                            real_score = self.discriminator(batch_y)
-                            real_loss = criterion_D(real_score, real)
-
-                            fake_score = self.discriminator(outputs.detach())
-                            fake_loss = criterion_D(fake_score, fake)
-                            loss += 0.5 * real_loss + 0.5 * fake_loss
-
-                        optimizer_D.zero_grad()
-                        scaler_D.scale(loss).backward()
-                        scaler_D.step(optimizer_D)
-                        scaler_D.update()
-                    else:
+                optimizer_D.zero_grad()
+                if self.use_amp:
+                    with autocast():
                         real_score = self.discriminator(batch_y)
                         real_loss = criterion_D(real_score, real)
 
@@ -208,24 +190,89 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
                         fake_loss = criterion_D(fake_score, fake)
                         loss += 0.5 * real_loss + 0.5 * fake_loss
 
-                        optimizer_D.zero_grad()
-                        loss.backward()
-                        optimizer_D.step()
+                    scaler_D.scale(loss).backward()
+                    scaler_D.step(optimizer_D)
+                    scaler_D.update()
                 else:
-                    real_loss = torch.tensor(1e4, device=self.device)
-                    fake_loss = torch.tensor(1e4, device=self.device)
-                    loss = torch.tensor(1e4, device=self.device)
+                    real_score = self.discriminator(batch_y)
+                    real_loss = criterion_D(real_score, real)
+
+                    fake_score = self.discriminator(outputs.detach())
+                    fake_loss = criterion_D(fake_score, fake)
+                    loss += 0.5 * real_loss + 0.5 * fake_loss
+
+                    loss.backward()
+                    optimizer_D.step()
 
                 real_losses.append(real_loss.item())
                 fake_losses.append(fake_loss.item())
                 train_loss_D.append(loss.item())
 
-                if self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/train_D_iter/loss_real', real_loss.item(), self.step)
-                    self.writer.add_scalar(f'{self.pred_len}/train_D_iter/loss_fake', fake_loss.item(), self.step)
-                    self.writer.add_scalar(f'{self.pred_len}/train_D_iter/loss', loss.item(), self.step)
+                self.writer.add_scalar(f'{self.pred_len}/train_D_iter/loss_real', real_loss.item(), self.step)
+                self.writer.add_scalar(f'{self.pred_len}/train_D_iter/loss_fake', fake_loss.item(), self.step)
+                self.writer.add_scalar(f'{self.pred_len}/train_D_iter/loss', loss.item(), self.step)
 
-                if (i + 1) % 100 == 0:
+                #-------------------------------------------------------------------
+                # Train the generator 
+                #-------------------------------------------------------------------
+                if self.step % self.args.d_steps == 0:
+                    loss = 0
+                    optimizer_G.zero_grad()
+                    if self.use_amp:
+                        with autocast():
+                            outputs, batch_y, attn = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
+
+                            if self.args.rec_lambda > 0:
+                                loss_rec = criterion_G(outputs, batch_y)
+                                loss += self.args.rec_lambda * loss_rec
+                            else:
+                                loss_rec = torch.tensor(1e4, device=self.device)
+
+                        if self.args.auxi_lambda > 0:
+                            outputs = torch.concat((batch_x.to(outputs.device), outputs), dim=1).float()  # [B, S+P, D]
+                            batch_y = torch.concat((batch_x.to(batch_y.device), batch_y), dim=1).float()  # [B, S+P, D]
+
+                            with autocast():
+                                score = self.discriminator(outputs)
+                                loss_auxi = criterion_D(score, real)
+                                loss += self.args.auxi_lambda * loss_auxi
+                        else:
+                            loss_auxi = torch.tensor(1e4, device=self.device)
+
+                        scaler_G.scale(loss).backward()
+                        scaler_G.step(optimizer_G)
+                        scaler_G.update()
+                    else:
+                        outputs, batch_y, attn = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
+
+                        if self.args.rec_lambda > 0:
+                            loss_rec = criterion_G(outputs, batch_y)
+                            loss += self.args.rec_lambda * loss_rec
+                        else:
+                            loss_rec = torch.tensor(1e4, device=self.device)
+
+                        if self.args.auxi_lambda > 0:
+                            outputs = torch.concat((batch_x.to(outputs.device), outputs), dim=1).float()  # [B, S+P, D]
+                            batch_y = torch.concat((batch_x.to(batch_y.device), batch_y), dim=1).float()  # [B, S+P, D]
+
+                            score = self.discriminator(outputs)
+                            loss_auxi = criterion_D(score, real)
+                            loss += self.args.auxi_lambda * loss_auxi
+                        else:
+                            loss_auxi = torch.tensor(1e4, device=self.device)
+
+                        loss.backward()
+                        optimizer_G.step()
+
+                    rec_losses.append(loss_rec.item())
+                    auxi_losses.append(loss_auxi.item())
+                    train_loss_G.append(loss.item())
+
+                    self.writer.add_scalar(f'{self.pred_len}/train_G_iter/loss_rec', loss_rec.item(), self.step)
+                    self.writer.add_scalar(f'{self.pred_len}/train_G_iter/loss_auxi', loss_auxi.item(), self.step)
+                    self.writer.add_scalar(f'{self.pred_len}/train_G_iter/loss', loss.item(), self.step)
+
+                if (i + 1) % 100 == 0 and (i + 1) >= self.args.d_steps:
                     print(
                         "\titers: {}, epoch: {} | loss_rec: {:.7f}, loss_auxi: {:.7f}, loss_G: {:.7f} | loss_real: {:.7f}, loss_fake: {:.7f}, loss_D: {:.7f}".format(
                             i + 1, self.epoch, loss_rec.item(), loss_auxi.item(), train_loss_G[-1], real_loss.item(), fake_loss.item(), train_loss_D[-1]
@@ -248,14 +295,13 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
             real_loss = np.average(real_losses); fake_loss = np.average(fake_losses)
             vali_loss = self.vali(vali_data, vali_loader, criterion_G)
 
-            if self.writer is not None:
-                self.writer.add_scalar(f'{self.pred_len}/train_G/loss', train_loss_G, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/train_G/loss_rec', rec_loss, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/train_G/loss_auxi', auxi_loss, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/train_D/loss', train_loss_D, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/train_D/loss_real', real_loss, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/train_D/loss_fake', fake_loss, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/vali/loss', vali_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train_G/loss', train_loss_G, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train_G/loss_rec', rec_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train_G/loss_auxi', auxi_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train_D/loss', train_loss_D, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train_D/loss_real', real_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train_D/loss_fake', fake_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/vali/loss', vali_loss, self.epoch)
 
             print(
                 "Epoch: {}, Steps: {} | TrainG Loss: {:.7f} Loss_rec: {:.7f} Loss_auxi: {:.7f} | TrainD Loss: {:.7f} Loss_real: {:.7f} Loss_fake: {:.7f} | Vali Loss: {:.7f}"
@@ -263,7 +309,7 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
             )
             other_to_save = {'discriminator': self.discriminator}
             improved = early_stopping(vali_loss, self.model, path, **other_to_save)
-            self.args.learned_from_method = True if improved and self.adversarial_learning else False
+            self.args.learned_from_method = True if improved and not self.args.learned_from_method else False
 
             if early_stopping.early_stop:
                 print("Early stopping")
@@ -273,8 +319,24 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
                 scheduler_G.step(vali_loss, self.epoch)
                 scheduler_D.step(vali_loss, self.epoch)
 
+    def train(self, setting):
+        train_data, train_loader = self._get_data(flag='train')
+        vali_data, vali_loader = self._get_data(flag='val')
+
+        path = os.path.join(self.args.checkpoints, setting)
+        os.makedirs(path, exist_ok=True)
+        res_path = os.path.join(self.args.results, setting)
+        os.makedirs(res_path, exist_ok=True)
+        self.writer = self._create_writer(res_path)
+
         best_model_path = os.path.join(path, 'checkpoint.pth')
+        print('\n>>>>>>>pre-training generator>>>>>>>>>>>>>>>>>>>>>>>>>>\n')
+        self.train_generator(train_data, train_loader, vali_data, vali_loader, path)
         self.model.load_state_dict(torch.load(best_model_path))
-        self.discriminator = torch.load(os.path.join(path, 'discriminator.pth'))
+
+        print('\n>>>>>>>adversarial training>>>>>>>>>>>>>>>>>>>>>>>>>>\n')
+        self.train_adversarial(train_data, train_loader, vali_data, vali_loader, path)
+        self.model.load_state_dict(torch.load(best_model_path))
+        self.discriminator.load_state_dict(torch.load(os.path.join(path, 'discriminator.pth')))
 
         return self.model

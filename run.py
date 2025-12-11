@@ -294,6 +294,8 @@ if __name__ == '__main__':
     parser.add_argument('--extra_metrics', action=EvalAction, default=[], help='extra_metrics')
     parser.add_argument('--spectral_norm', type=int, default=0, help='spectral norm')
     parser.add_argument('--label_smoothing', type=float, default=0, help='label smoothing')
+    parser.add_argument('--hidden_dims', type=str, default='512,128,1', help='hidden_dims')
+    parser.add_argument('--d_steps', type=int, default=1, help='discr_steps')
 
     # KernelDF
     parser.add_argument('--kernel_type', type=str, default='gau', help='kernel type')

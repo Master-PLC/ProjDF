@@ -195,8 +195,7 @@ class Exp_Long_Term_Forecast_META(Exp_Basic):
         os.makedirs(path, exist_ok=True)
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        if self.report_to != 'None':
-            self.writer = self._create_writer(res_path)
+        self.writer = self._create_writer(res_path)
 
         time_now = time.time()
         train_steps = len(train_loader)
@@ -217,9 +216,8 @@ class Exp_Long_Term_Forecast_META(Exp_Basic):
 
             lr_cur = scheduler.get_lr()
             meta_lr_cur = A_scheduler.get_lr()
-            if self.writer is not None:
-                self.writer.add_scalar(f'{self.pred_len}/train/lr', lr_cur, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/train/meta_lr', meta_lr_cur, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/lr', lr_cur, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/meta_lr', meta_lr_cur, self.epoch)
 
             epoch_time = time.time()
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(train_loader):
@@ -239,9 +237,8 @@ class Exp_Long_Term_Forecast_META(Exp_Basic):
                     loss_mse = criterion(outputs, batch_y)
                 train_loss.append(loss.item())
                 train_loss_mse.append(loss_mse.item())
-                if self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/train_iter/loss_cov', loss.item(), self.step)
-                    self.writer.add_scalar(f'{self.pred_len}/train_iter/loss_mse', loss_mse.item(), self.step)
+                self.writer.add_scalar(f'{self.pred_len}/train_iter/loss_cov', loss.item(), self.step)
+                self.writer.add_scalar(f'{self.pred_len}/train_iter/loss_mse', loss_mse.item(), self.step)
 
                 self.check_meta_learning()
                 if self.meta_learning:
@@ -266,9 +263,8 @@ class Exp_Long_Term_Forecast_META(Exp_Basic):
 
                 query_loss.append(query_l)
                 support_loss.append(support_l)
-                if self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/train_iter/loss_query', query_l, self.step)
-                    self.writer.add_scalar(f'{self.pred_len}/train_iter/loss_support', support_l, self.step)
+                self.writer.add_scalar(f'{self.pred_len}/train_iter/loss_query', query_l, self.step)
+                self.writer.add_scalar(f'{self.pred_len}/train_iter/loss_support', support_l, self.step)
 
                 if (i + 1) % 100 == 0:
                     print("\titers: {}, epoch: {} | loss: {:.7f}, query loss: {:.7f}, support loss: {:.7f}".format(i + 1, self.epoch, loss.item(), query_l, support_l))
@@ -291,14 +287,13 @@ class Exp_Long_Term_Forecast_META(Exp_Basic):
             support_loss = np.average(support_loss)
             valid_loss_mse, valid_loss_cov = self.vali(vali_data, vali_loader, criterion)
 
-            if self.writer is not None:
-                self.writer.add_scalar(f'{self.pred_len}/train/loss_cov', train_loss, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/train/loss_mse', train_loss_mse, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/train/loss_query', query_loss, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/train/loss_support', support_loss, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/vali/loss_cov', valid_loss_cov, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/vali/loss_mse', valid_loss_mse, self.epoch)
-                log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/cov_mat', self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss_cov', train_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss_mse', train_loss_mse, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss_query', query_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss_support', support_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/vali/loss_cov', valid_loss_cov, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/vali/loss_mse', valid_loss_mse, self.epoch)
+            log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/cov_mat', self.epoch)
 
             print(
                 "Epoch: {}, Steps: {} | Train Loss Cov: {:.7f}, MSE: {:.7f}, Query: {:.7f} | Vali Loss Cov: {:.7f}, MSE: {:.7f}".format(
@@ -383,7 +378,7 @@ class Exp_Long_Term_Forecast_META(Exp_Basic):
         # result save
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        if self.report_to != 'None' and self.writer is None:
+        if self.writer is None:
             self.writer = self._create_writer(res_path)
 
         mae, mse, rmse, mape, mspe, mre = metric_torch(preds, trues)
@@ -404,10 +399,9 @@ class Exp_Long_Term_Forecast_META(Exp_Basic):
             line = f'{line}\t| {extra_line}'
         print(line)
 
-        if self.writer is not None:
-            for k, v in full_metrics.items():
-                self.writer.add_scalar(f'{self.pred_len}/test/{k}', v, self.epoch)
-            self.writer.close()
+        for k, v in full_metrics.items():
+            self.writer.add_scalar(f'{self.pred_len}/test/{k}', v, self.epoch)
+        self.writer.close()
 
         if self.output_log:
             log_path = "result_long_term_forecast.txt" if not self.args.log_path else self.args.log_path

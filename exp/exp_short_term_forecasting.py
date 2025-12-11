@@ -100,8 +100,7 @@ class Exp_Short_Term_Forecast(Exp_Basic):
         os.makedirs(path, exist_ok=True)
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        if self.report_to != 'None':
-            self.writer = self._create_writer(res_path)
+        self.writer = self._create_writer(res_path)
 
         time_now = time.time()
 
@@ -126,8 +125,7 @@ class Exp_Short_Term_Forecast(Exp_Basic):
 
             lr_cur = scheduler.get_lr()
             lr_cur = lr_cur[0] if isinstance(lr_cur, list) else lr_cur
-            if self.writer is not None:
-                self.writer.add_scalar(f'{self.seasonal_patterns}/train/lr', lr_cur, self.epoch)
+            self.writer.add_scalar(f'{self.seasonal_patterns}/train/lr', lr_cur, self.epoch)
 
             self.model.train()
             epoch_time = time.time()
@@ -150,8 +148,7 @@ class Exp_Short_Term_Forecast(Exp_Basic):
                 else:
                     loss_rec = torch.tensor(1e4)
 
-                if self.step % self.log_step == 0 and self.writer is not None:
-                    self.writer.add_scalar(f'{self.seasonal_patterns}/train/loss_rec', loss_rec, self.step)
+                self.writer.add_scalar(f'{self.seasonal_patterns}/train/loss_rec', loss_rec, self.step)
 
                 if self.args.auxi_lambda:
                     if self.args.auxi_mode == "fft":
@@ -209,12 +206,10 @@ class Exp_Short_Term_Forecast(Exp_Basic):
                 else:
                     loss_auxi = torch.tensor(1e4)
 
-                if self.step % self.log_step == 0 and self.writer is not None:
-                    self.writer.add_scalar(f'{self.seasonal_patterns}/train/loss_auxi', loss_auxi, self.step)
+                self.writer.add_scalar(f'{self.seasonal_patterns}/train/loss_auxi', loss_auxi, self.step)
 
                 train_loss.append(loss.item())
-                if self.writer is not None:
-                    self.writer.add_scalar(f'{self.seasonal_patterns}/train/loss_iter', loss.item(), self.step)
+                self.writer.add_scalar(f'{self.seasonal_patterns}/train/loss_iter', loss.item(), self.step)
 
                 if (i + 1) % 100 == 0:
                     print(
@@ -238,9 +233,8 @@ class Exp_Short_Term_Forecast(Exp_Basic):
             print("Epoch: {} cost time: {}".format(self.epoch, time.time() - epoch_time))
             train_loss = np.average(train_loss)
             vali_loss = self.vali(train_loader, vali_loader, criterion)
-            if self.writer is not None:
-                self.writer.add_scalar(f'{self.seasonal_patterns}/train/loss', train_loss, self.epoch)
-                self.writer.add_scalar(f'{self.seasonal_patterns}/vali/loss', vali_loss, self.epoch)
+            self.writer.add_scalar(f'{self.seasonal_patterns}/train/loss', train_loss, self.epoch)
+            self.writer.add_scalar(f'{self.seasonal_patterns}/vali/loss', vali_loss, self.epoch)
 
             print(
                 "Epoch: {}, Steps: {} | Train Loss: {:.7f} Vali Loss: {:.7f}".format(

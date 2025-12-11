@@ -207,8 +207,25 @@ class EarlyStopping:
             print(f'Validation loss decreased \033[92m({self.val_loss_min:.6f} --> {val_loss:.6f})\033[0m. Saving model ...')
         torch.save(model.state_dict(), os.path.join(path, 'checkpoint.pth'))
         for key, value in kwargs.items():
-            torch.save(value, os.path.join(path, f'{key}.pth'))
+            if isinstance(value, nn.Module):
+                torch.save(value.state_dict(), os.path.join(path, f'{key}.pth'))
+            else:
+                torch.save(value, os.path.join(path, f'{key}.pth'))
         self.val_loss_min = val_loss
+
+
+class FoolWriter:
+    def __init__(self, log_dir):
+        self.log_dir = log_dir
+
+    def add_scalar(self, tag, value, step):
+        pass
+
+    def add_figure(self, tag, figure, step):
+        pass
+
+    def close(self):
+        pass
 
 
 class BufferSummaryWriter:

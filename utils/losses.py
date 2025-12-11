@@ -22,6 +22,7 @@ import numpy as np
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 def divide_no_nan(a, b):
@@ -104,3 +105,23 @@ class quantile_loss(nn.Module):
         for tau in self.tau:
             loss += torch.max(tau * errors, (tau - 1) * errors).mean()
         return loss
+
+
+class wgan_loss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, y_pred, y_true):
+        loss = torch.mean(y_pred)
+        return -loss if y_true.mean() > 0.5 else loss
+
+
+class hinge_loss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, y_pred, y_true):
+        if y_true.mean() > 0.5:
+            return torch.mean(F.relu(1 - y_pred))
+        else:
+            return torch.mean(F.relu(1 + y_pred))

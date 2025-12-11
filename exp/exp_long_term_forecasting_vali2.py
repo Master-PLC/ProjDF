@@ -114,8 +114,7 @@ class Exp_Long_Term_Forecast_Vali2(Exp_Basic):
         os.makedirs(path, exist_ok=True)
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        if self.report_to != 'None':
-            self.writer = self._create_writer(res_path)
+        self.writer = self._create_writer(res_path)
 
         time_now = time.time()
 
@@ -150,8 +149,7 @@ class Exp_Long_Term_Forecast_Vali2(Exp_Basic):
 
             lr_cur = scheduler.get_lr()
             lr_cur = lr_cur[0] if isinstance(lr_cur, list) else lr_cur
-            if self.writer is not None:
-                self.writer.add_scalar(f'{self.pred_len}/train/lr', lr_cur, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/lr', lr_cur, self.epoch)
 
             self.model.train()
             epoch_time = time.time()
@@ -168,8 +166,7 @@ class Exp_Long_Term_Forecast_Vali2(Exp_Basic):
                     loss += self.args.rec_lambda * loss_rec
                 else:
                     loss_rec = torch.tensor(1e4)
-                if self.step % self.log_step == 0 and self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', loss_rec, self.step)
+                self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', loss_rec, self.step)
 
                 if self.args.l1_weight and attn:
                     loss += self.args.l1_weight * attn[0]
@@ -357,8 +354,7 @@ class Exp_Long_Term_Forecast_Vali2(Exp_Basic):
                     loss += self.args.auxi_lambda * loss_auxi
                 else:
                     loss_auxi = torch.tensor(1e4)
-                if self.step % self.log_step == 0 and self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', loss_auxi, self.step)
+                self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', loss_auxi, self.step)
 
                 if torch.isnan(loss) or torch.isinf(loss):
                     print(f"Loss is NaN or Inf, skipping epoch {self.epoch} step {self.step}")
@@ -366,8 +362,7 @@ class Exp_Long_Term_Forecast_Vali2(Exp_Basic):
                     continue
 
                 train_loss.append(loss.item())
-                if self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/train/loss_iter', loss.item(), self.step)
+                self.writer.add_scalar(f'{self.pred_len}/train/loss_iter', loss.item(), self.step)
 
                 if (i + 1) % 100 == 0:
                     print(
@@ -396,11 +391,10 @@ class Exp_Long_Term_Forecast_Vali2(Exp_Basic):
             train_loss = np.average(train_loss)
             vali_loss, mae_loss, ot_dist_exact = self.vali(vali_data, vali_loader, criterion)
 
-            if self.writer is not None:
-                self.writer.add_scalar(f'{self.pred_len}/train/loss', train_loss, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/vali/loss', vali_loss, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/vali/mae', mae_loss, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/vali/ot_dist_exact', ot_dist_exact, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss', train_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/vali/loss', vali_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/vali/mae', mae_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/vali/ot_dist_exact', ot_dist_exact, self.epoch)
 
             print(
                 "Epoch: {}, Steps: {} | Train Loss: {:.7f} Vali Loss: {:.7f}".format(

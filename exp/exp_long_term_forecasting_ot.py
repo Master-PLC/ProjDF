@@ -37,8 +37,7 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
         os.makedirs(path, exist_ok=True)
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        if self.report_to != 'None':
-            self.writer = self._create_writer(res_path)
+        self.writer = self._create_writer(res_path)
 
         time_now = time.time()
 
@@ -60,8 +59,7 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
             train_loss = []
 
             lr_cur = scheduler.get_lr()
-            if self.writer is not None:
-                self.writer.add_scalar(f'{self.pred_len}/train/lr', lr_cur, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/lr', lr_cur, self.epoch)
 
             self.model.train()
             epoch_time = time.time()
@@ -73,8 +71,7 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
                 outputs, batch_y, _ = self.forward_step(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
 
                 loss = criterion(outputs, batch_y)
-                if self.step % self.log_step == 0 and self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', loss.item(), self.step)
+                self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', loss.item(), self.step)
                 first_train_loss.append(loss.item())
 
                 auxi_batch_x, auxi_batch_y, auxi_batch_x_mark, auxi_batch_y_mark = next(auxi_train_loader)
@@ -94,8 +91,7 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
                     outputs, batch_y, self.args.distance, ot_type=self.args.ot_type, normalize=self.args.normalize, 
                     mask_factor=self.args.mask_factor, reg_sk=self.args.reg_sk, stopThr=self.args.stopThr, numItermax=self.args.numItermax, var_weight=self.args.var_weight
                 )
-                if self.step % self.log_step == 0 and self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', loss_auxi.item(), self.step)
+                self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', loss_auxi.item(), self.step)
                 second_train_loss.append(loss_auxi.item())
 
                 if torch.isnan(loss_auxi) or torch.isinf(loss_auxi):
@@ -104,8 +100,7 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
                     continue
 
                 loss += self.args.auxi_lambda * loss_auxi
-                if self.step % self.log_step == 0 and self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/train/loss_iter', loss.item(), self.step)
+                self.writer.add_scalar(f'{self.pred_len}/train/loss_iter', loss.item(), self.step)
                 train_loss.append(loss.item())
 
                 loss.backward()
@@ -137,11 +132,10 @@ class Exp_Long_Term_Forecast_OT(Exp_Basic):
             train_loss = np.average(train_loss)
             vali_loss = self.vali(vali_data, vali_loader, criterion)
 
-            if self.writer is not None:
-                self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', first_train_loss, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', second_train_loss, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/train/loss', train_loss, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/vali/loss', vali_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', first_train_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', second_train_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss', train_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/vali/loss', vali_loss, self.epoch)
 
             print(
                 "Epoch: {}, Steps: {} | 1st Train Loss: {:.7f} 2nd Train Loss: {:.7f} Vali Loss: {:.7f}".format(

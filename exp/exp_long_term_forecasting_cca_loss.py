@@ -155,8 +155,7 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
         os.makedirs(path, exist_ok=True)
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        if self.report_to != 'None':
-            self.writer = self._create_writer(res_path)
+        self.writer = self._create_writer(res_path)
 
         time_now = time.time()
 
@@ -177,12 +176,11 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
             reg_losses, decorr_losses = [], []
 
             lr_cur = scheduler.get_lr()
-            if self.writer is not None:
-                if isinstance(lr_cur, list):
-                    for lr_idx, lr in enumerate(lr_cur):
-                        self.writer.add_scalar(f'{self.pred_len}/train/lr_{lr_idx}', lr, self.epoch)
-                else:
-                    self.writer.add_scalar(f'{self.pred_len}/train/lr', lr_cur, self.epoch)
+            if isinstance(lr_cur, list):
+                for lr_idx, lr in enumerate(lr_cur):
+                    self.writer.add_scalar(f'{self.pred_len}/train/lr_{lr_idx}', lr, self.epoch)
+            else:
+                self.writer.add_scalar(f'{self.pred_len}/train/lr', lr_cur, self.epoch)
 
             self.model.train()
             epoch_time = time.time()
@@ -204,8 +202,7 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
                 else:
                     loss_rec = torch.tensor(1000., device=self.device)
                 rec_losses.append(loss_rec.item())
-                if self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', loss_rec, self.step)
+                self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', loss_rec, self.step)
 
                 if self.args.auxi_lambda and self.args.auxi_mode == "cca" and self.projection_learning:
                     if self.args.joint_forecast:  # joint distribution forecasting
@@ -220,8 +217,7 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
                 else:
                     loss_auxi = torch.tensor(1000., device=self.device)
                 auxi_losses.append(loss_auxi.item())
-                if self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', loss_auxi, self.step)
+                self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', loss_auxi, self.step)
 
                 if self.args.decorr_lambda and self.projection_learning:
                     loss_decorr = channel_decorrelation_loss(batch_x, p=1) + channel_decorrelation_loss(predictions, p=1)
@@ -229,8 +225,7 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
                 else:
                     loss_decorr = torch.tensor(1000., device=self.device)
                 decorr_losses.append(loss_decorr.item())
-                if self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/train/loss_decorr', loss_decorr, self.step)
+                self.writer.add_scalar(f'{self.pred_len}/train/loss_decorr', loss_decorr, self.step)
 
                 if self.args.reg_lambda and self.projection_learning:
                     if self.args.corr_type == 'cosine':
@@ -264,9 +259,8 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
                 reg_losses.append(reg_loss.item())
                 train_loss.append(loss.item())
 
-                if self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/train/loss_reg', reg_loss.item(), self.step)
-                    self.writer.add_scalar(f'{self.pred_len}/train/loss_iter', loss.item(), self.step)
+                self.writer.add_scalar(f'{self.pred_len}/train/loss_reg', reg_loss.item(), self.step)
+                self.writer.add_scalar(f'{self.pred_len}/train/loss_iter', loss.item(), self.step)
 
                 if (i + 1) % 100 == 0:
                     print(
@@ -294,15 +288,14 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
             loss_reg = np.average(reg_losses); loss_decorr = np.average(decorr_losses)
             vali_loss = self.vali(vali_data, vali_loader, criterion)
 
-            if self.writer is not None:
-                self.writer.add_scalar(f'{self.pred_len}/train/loss', train_loss, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', loss_rec, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', loss_auxi, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/train/loss_reg', loss_reg, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/train/loss_decorr', loss_decorr, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/vali/loss', vali_loss, self.epoch)
-                log_heatmap(self.writer, get_projection(self.x_proj, self.args.proj_init), f'{self.pred_len}/x_proj', self.epoch)
-                log_heatmap(self.writer, get_projection(self.y_proj, self.args.proj_init), f'{self.pred_len}/y_proj', self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss', train_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', loss_rec, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', loss_auxi, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss_reg', loss_reg, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss_decorr', loss_decorr, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/vali/loss', vali_loss, self.epoch)
+            log_heatmap(self.writer, get_projection(self.x_proj, self.args.proj_init), f'{self.pred_len}/x_proj', self.epoch)
+            log_heatmap(self.writer, get_projection(self.y_proj, self.args.proj_init), f'{self.pred_len}/y_proj', self.epoch)
 
             print(
                 "Epoch: {}, Steps: {} | Train Loss: {:.7f} Loss_rec: {:.7f} Loss_auxi: {:.7f} Loss_decorr: {:.7f} Loss_reg: {:.7f} | Vali Loss: {:.7f}".format(
@@ -395,7 +388,7 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
         # result save
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        if self.report_to != 'None' and self.writer is None:
+        if self.writer is None:
             self.writer = self._create_writer(res_path)
 
         mae, mse, rmse, mape, mspe, mre = metric_torch(preds, trues)
@@ -410,10 +403,9 @@ class Exp_Long_Term_Forecast_CCA_Loss(Exp_Basic):
             line = f'{line}\t| {extra_line}'
         print(line)
 
-        if self.writer is not None:
-            for k, v in full_metrics.items():
-                self.writer.add_scalar(f'{self.pred_len}/test/{k}', v, self.epoch)
-            self.writer.close()
+        for k, v in full_metrics.items():
+            self.writer.add_scalar(f'{self.pred_len}/test/{k}', v, self.epoch)
+        self.writer.close()
 
         if self.output_log:
             log_path = "result_long_term_forecast.txt" if not self.args.log_path else self.args.log_path

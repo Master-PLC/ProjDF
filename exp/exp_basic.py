@@ -15,9 +15,9 @@ from torch.utils.tensorboard import SummaryWriter
 from data_provider.data_factory import data_provider
 from models import MODEL_DICT, MODEL_REQUIRES_CYCLE
 from utils.fft_ot import cal_wasserstein
-from utils.losses import quantile_loss, mape_loss, mase_loss, smape_loss
+from utils.losses import quantile_loss, mape_loss, mase_loss, smape_loss, wgan_loss, hinge_loss
 from utils.metrics_torch import metric_torch
-from utils.tools import pv, visual, LocalBufferWriter, BufferSummaryWriter
+from utils.tools import pv, visual, LocalBufferWriter, BufferSummaryWriter, FoolWriter
 
 
 class Exp_Basic(object):
@@ -93,7 +93,7 @@ class Exp_Basic(object):
         elif self.report_to == 'buffer':
             writer = BufferSummaryWriter(log_dir)
         else:
-            writer = None
+            writer = FoolWriter(log_dir)
         return writer
 
     def _get_data(self, flag, shuffle=None):
@@ -129,6 +129,10 @@ class Exp_Basic(object):
             criterion = nn.SmoothL1Loss()
         elif loss_type == 'bce':
             criterion = nn.BCEWithLogitsLoss()
+        elif loss_type == 'wgan':
+            criterion = wgan_loss()
+        elif loss_type == 'hinge':
+            criterion = hinge_loss()
         elif loss_type == 'quantile':
             criterion = quantile_loss(self.args.quants)
         elif loss_type == 'mape':
@@ -262,7 +266,7 @@ class Exp_Basic(object):
         # result save
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        if self.report_to != 'None' and self.writer is None:
+        if self.writer is None:
             self.writer = self._create_writer(res_path)
 
         mae, mse, rmse, mape, mspe, mre = metric_torch(preds, trues)
@@ -296,10 +300,9 @@ class Exp_Basic(object):
             line = f'{line}\t| {extra_line}'
         print(line)
 
-        if self.writer is not None:
-            for k, v in full_metrics.items():
-                self.writer.add_scalar(f'{self.pred_len}/test/{k}', v, self.epoch)
-            self.writer.close()
+        for k, v in full_metrics.items():
+            self.writer.add_scalar(f'{self.pred_len}/test/{k}', v, self.epoch)
+        self.writer.close()
 
         if self.output_log:
             log_path = "result_long_term_forecast.txt" if not self.args.log_path else self.args.log_path

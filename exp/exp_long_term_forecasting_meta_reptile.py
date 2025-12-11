@@ -244,8 +244,7 @@ class Exp_Long_Term_Forecast_META_Reptile(Exp_Basic):
             task_losses = []
 
             meta_lr_cur = A_scheduler.get_lr()
-            if self.writer is not None:
-                self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_lr', meta_lr_cur, meta_step)
+            self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_lr', meta_lr_cur, meta_step)
 
             self.model.train()
             self.A.train()
@@ -261,8 +260,7 @@ class Exp_Long_Term_Forecast_META_Reptile(Exp_Basic):
                     for k in A_grads_accum:
                         A_grads_accum[k] += -A_delta[k]
 
-                if self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/meta_train/task_{task_id+1}_meta_loss', meta_loss, meta_step)
+                self.writer.add_scalar(f'{self.pred_len}/meta_train/task_{task_id+1}_meta_loss', meta_loss, meta_step)
                 if verbose:
                     print(f"\ttask: {task_id + 1}, total task: {self.num_tasks} | meta loss: {meta_loss:.7f}")
 
@@ -275,9 +273,8 @@ class Exp_Long_Term_Forecast_META_Reptile(Exp_Basic):
             A_optim.step()
 
             avg_meta_loss_val = np.mean(task_losses)
-            if self.writer is not None:
-                self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_loss', avg_meta_loss_val, meta_step)
-                log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/cov_mat', meta_step)
+            self.writer.add_scalar(f'{self.pred_len}/meta_train/meta_loss', avg_meta_loss_val, meta_step)
+            log_heatmap(self.writer, get_projection(self.A), f'{self.pred_len}/cov_mat', meta_step)
 
             if verbose:
                 print(f"Step: {meta_step} cost time: {time.time() - epoch_time:.2f}s")
@@ -316,8 +313,7 @@ class Exp_Long_Term_Forecast_META_Reptile(Exp_Basic):
             train_loss, train_loss_mse = [], []
 
             lr_cur = scheduler.get_lr()
-            if self.writer is not None:
-                self.writer.add_scalar(f'{self.pred_len}/meta_test/lr', lr_cur, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/meta_test/lr', lr_cur, self.epoch)
 
             epoch_time = time.time()
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(train_loader):
@@ -337,9 +333,8 @@ class Exp_Long_Term_Forecast_META_Reptile(Exp_Basic):
                     loss_mse = criterion(outputs, batch_y)
                 train_loss.append(loss.item())
                 train_loss_mse.append(loss_mse.item())
-                if self.writer is not None:
-                    self.writer.add_scalar(f'{self.pred_len}/meta_test_iter/loss', loss.item(), self.step)
-                    self.writer.add_scalar(f'{self.pred_len}/meta_test_iter/loss_mse', loss_mse.item(), self.step)
+                self.writer.add_scalar(f'{self.pred_len}/meta_test_iter/loss', loss.item(), self.step)
+                self.writer.add_scalar(f'{self.pred_len}/meta_test_iter/loss_mse', loss_mse.item(), self.step)
 
                 if (i + 1) % 100 == 0:
                     print(f"\tMeta Test - iters: {i + 1}, epoch: {self.epoch} | loss: {loss.item():.7f}, mse loss: {loss_mse.item():.7f}")
@@ -358,11 +353,10 @@ class Exp_Long_Term_Forecast_META_Reptile(Exp_Basic):
             train_loss_mse = np.average(train_loss_mse)
             valid_loss_mse, valid_loss_cov = self.vali(vali_data, vali_loader, criterion)
 
-            if self.writer is not None:
-                self.writer.add_scalar(f'{self.pred_len}/meta_test/loss_cov', train_loss, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/meta_test/loss_mse', train_loss_mse, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/vali/loss_cov', valid_loss_cov, self.epoch)
-                self.writer.add_scalar(f'{self.pred_len}/vali/loss_mse', valid_loss_mse, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/meta_test/loss_cov', train_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/meta_test/loss_mse', train_loss_mse, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/vali/loss_cov', valid_loss_cov, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/vali/loss_mse', valid_loss_mse, self.epoch)
 
             print(f"Epoch: {self.epoch} | Train Loss Cov: {train_loss:.7f}, MSE: {train_loss_mse:.7f} | Valid Loss Cov: {valid_loss_cov:.7f}, MSE: {valid_loss_mse:.7f}")
             early_stopping(valid_loss_mse, self.model, path)
@@ -382,8 +376,7 @@ class Exp_Long_Term_Forecast_META_Reptile(Exp_Basic):
         os.makedirs(path, exist_ok=True)
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        if self.report_to != 'None':
-            self.writer = self._create_writer(res_path)
+        self.writer = self._create_writer(res_path)
 
         criterion = self._select_criterion()
 
@@ -462,7 +455,7 @@ class Exp_Long_Term_Forecast_META_Reptile(Exp_Basic):
         # result save
         res_path = os.path.join(self.args.results, setting)
         os.makedirs(res_path, exist_ok=True)
-        if self.report_to != 'None' and self.writer is None:
+        if self.writer is None:
             self.writer = self._create_writer(res_path)
 
         mae, mse, rmse, mape, mspe, mre = metric_torch(preds, trues)
@@ -483,10 +476,9 @@ class Exp_Long_Term_Forecast_META_Reptile(Exp_Basic):
             line = f'{line}\t| {extra_line}'
         print(line)
 
-        if self.writer is not None:
-            for k, v in full_metrics.items():
-                self.writer.add_scalar(f'{self.pred_len}/test/{k}', v, self.epoch)
-            self.writer.close()
+        for k, v in full_metrics.items():
+            self.writer.add_scalar(f'{self.pred_len}/test/{k}', v, self.epoch)
+        self.writer.close()
 
         if self.output_log:
             log_path = "result_long_term_forecast.txt" if not self.args.log_path else self.args.log_path
