@@ -141,6 +141,13 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
         if self.use_amp:
             scaler_D = GradScaler()
 
+        #-------------------------------------------------------------------
+        # Initial validation
+        #-------------------------------------------------------------------
+        vali_loss = self.vali(vali_data, vali_loader, criterion_G)
+        early_stopping(vali_loss, self.model, path)
+        self.writer.add_scalar(f'{self.pred_len}/vali/loss', vali_loss, 0)
+
         for epoch in range(self.args.train_epochs):
             self.epoch = epoch + 1
             iter_count = 0
@@ -309,7 +316,8 @@ class Exp_Long_Term_Forecast_GAN(Exp_Basic):
             )
             other_to_save = {'discriminator': self.discriminator}
             improved = early_stopping(vali_loss, self.model, path, **other_to_save)
-            self.args.learned_from_method = True if improved and not self.args.learned_from_method else False
+            if not self.args.learned_from_method and improved:
+                self.args.learned_from_method = True
 
             if early_stopping.early_stop:
                 print("Early stopping")
