@@ -308,7 +308,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         kwargs = {
                             'kernel_type': self.args.kernel_type, 'gamma': self.args.gamma, 'J': self.args.J,
                             'inner_lr': self.args.meta_lr, 'inner_steps': self.args.meta_inner_steps, 'optim_type': self.args.meta_optim_type,
-                            'reg': self.args.reg_sk, 'solver_type': self.args.solver_type
+                            'reg': self.args.reg_sk, 'solver_type': self.args.solver_type, 'C': self.args.C,
                         }
                         if self.args.auxi_type == "akb":
                             loss_auxi = akb_loss(outputs, batch_y, **kwargs)

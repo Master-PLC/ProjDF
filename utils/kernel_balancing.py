@@ -57,7 +57,7 @@ KERNEL_MAP = {
     'exp': exponential_kernel
 }
 
-def akb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inner_steps=3, optim_type='adam', solver_type='exact', reg=1e-3):
+def akb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inner_steps=3, optim_type='adam', solver_type='exact', reg=1e-3, C=0.01):
     """
     Adaptive Kernel Balancing (AKB) Loss Calculation Function.
     
@@ -116,7 +116,10 @@ def akb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inn
     pred_proj = kernel_func(pred_flat, target_anchors, gamma)     # [B, J]
     target_proj = kernel_func(target_flat, target_anchors, gamma) # [B, J]
     
-    return pred_proj - target_proj
+    diff = torch.mean(pred_proj - target_proj, dim=0)
+    loss = F.relu(diff - C) + F.relu(-diff - C)
+    loss = loss.sum()
+    return loss
 
 
 def wkb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inner_steps=3, optim_type='adam'):
