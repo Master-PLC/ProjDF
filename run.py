@@ -300,6 +300,7 @@ if __name__ == '__main__':
     # KernelDF
     parser.add_argument('--kernel_type', type=str, default='gau', help='kernel type')
     parser.add_argument('--J', type=int, default=3, help='J')
+    parser.add_argument('--solver_type', type=str, default='exact', help='solver type')
 
     args = parser.parse_args()
 

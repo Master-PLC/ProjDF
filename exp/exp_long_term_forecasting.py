@@ -107,6 +107,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             iter_count = 0
             has_nan_in_epoch = False
             train_loss = []
+            rec_loss, auxi_loss = [], []
 
             lr_cur = scheduler.get_lr()
             lr_cur = lr_cur[0] if isinstance(lr_cur, list) else lr_cur
@@ -306,7 +307,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     elif self.args.auxi_mode == "kernel_balancing":
                         kwargs = {
                             'kernel_type': self.args.kernel_type, 'gamma': self.args.gamma, 'J': self.args.J,
-                            'inner_lr': self.args.meta_lr, 'inner_steps': self.args.meta_inner_steps, 'optim_type': self.args.meta_optim_type
+                            'inner_lr': self.args.meta_lr, 'inner_steps': self.args.meta_inner_steps, 'optim_type': self.args.meta_optim_type,
+                            'reg': self.args.reg_sk, 'solver_type': self.args.solver_type
                         }
                         if self.args.auxi_type == "akb":
                             loss_auxi = akb_loss(outputs, batch_y, **kwargs)
@@ -344,6 +346,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     continue
 
                 train_loss.append(loss.item())
+                rec_loss.append(loss_rec.item())
+                auxi_loss.append(loss_auxi.item())
                 self.writer.add_scalar(f'{self.pred_len}/train_iter/loss_rec', loss_rec.item(), self.step)
                 self.writer.add_scalar(f'{self.pred_len}/train_iter/loss_auxi', loss_auxi.item(), self.step)
                 self.writer.add_scalar(f'{self.pred_len}/train_iter/loss', loss.item(), self.step)
@@ -373,9 +377,13 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
             print("Epoch: {} cost time: {}".format(self.epoch, time.time() - epoch_time))
             train_loss = np.average(train_loss)
+            rec_loss = np.average(rec_loss)
+            auxi_loss = np.average(auxi_loss)
             vali_loss = self.vali(vali_data, vali_loader, criterion)
 
             self.writer.add_scalar(f'{self.pred_len}/train/loss', train_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss_rec', rec_loss, self.epoch)
+            self.writer.add_scalar(f'{self.pred_len}/train/loss_auxi', auxi_loss, self.epoch)
             self.writer.add_scalar(f'{self.pred_len}/vali/loss', vali_loss, self.epoch)
 
             print(

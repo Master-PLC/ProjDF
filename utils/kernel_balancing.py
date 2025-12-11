@@ -1,4 +1,6 @@
 import torch
+
+from math import sqrt
 import torch.nn.functional as F
 
 def gaussian_kernel(X, Y, gamma=1.0):
@@ -15,6 +17,7 @@ def gaussian_kernel(X, Y, gamma=1.0):
     """
     if X.ndim > 2: X = X.reshape(X.size(0), -1)
     if Y.ndim > 2: Y = Y.reshape(Y.size(0), -1)
+    dim = X.size(1)
         
     X_norm_sq = (X**2).sum(1).view(-1, 1)
     Y_norm_sq = (Y**2).sum(1).view(-1, 1)
@@ -23,7 +26,7 @@ def gaussian_kernel(X, Y, gamma=1.0):
     
     # 防止数值下溢
     squared_dist = torch.clamp(squared_dist, min=0.0)
-    return torch.exp(-squared_dist * gamma)
+    return torch.exp(-squared_dist / dim * gamma)
 
 def exponential_kernel(X, Y, gamma=1.0):
     """
@@ -38,6 +41,7 @@ def exponential_kernel(X, Y, gamma=1.0):
     """
     if X.ndim > 2: X = X.reshape(X.size(0), -1)
     if Y.ndim > 2: Y = Y.reshape(Y.size(0), -1)
+    dim = X.size(1)
     
     X_norm_sq = (X**2).sum(1).view(-1, 1)
     Y_norm_sq = (Y**2).sum(1).view(-1, 1)
@@ -45,7 +49,7 @@ def exponential_kernel(X, Y, gamma=1.0):
     
     # 限制最小值为 1e-8 防止 sqrt(0) 导致梯度 NaN
     dist = torch.sqrt(torch.clamp(squared_dist, min=1e-8))
-    return torch.exp(-dist * gamma)
+    return torch.exp(-dist / sqrt(dim) * gamma)
 
 # 核函数映射表
 KERNEL_MAP = {
@@ -53,7 +57,7 @@ KERNEL_MAP = {
     'exp': exponential_kernel
 }
 
-def akb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inner_steps=3, optim_type='adam'):
+def akb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inner_steps=3, optim_type='adam', solver_type='exact', reg=1e-3):
     """
     Adaptive Kernel Balancing (AKB) Loss Calculation Function.
     
@@ -72,41 +76,41 @@ def akb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inn
     pred_flat = pred.reshape(B, -1)
     target_flat = target.reshape(B, -1)
 
-    # 1. 计算拟合目标：每个样本的重构误差
     with torch.no_grad():
-        e_loss_per_sample = torch.mean((pred - target)**2, dim=(1, 2))
-
-    # 2. 内层循环：寻找 alpha 以拟合误差
-    # alpha 的物理含义：样本 i 对当前误差分布的贡献度
-    alpha = torch.zeros(B, device=pred.device, requires_grad=True, dtype=torch.float32)
-    if optim_type == 'adam':
-        optimizer = torch.optim.Adam([alpha], lr=inner_lr)
-    elif optim_type == 'sgd':
-        optimizer = torch.optim.SGD([alpha], lr=inner_lr)
-    else:
-        raise ValueError(f"Unknown optimizer: {optim_type}")
-
-    with torch.no_grad():
+        # 1. 计算拟合目标
+        # 注意：这里 pred 只是用来计算误差值，不需要传回梯度给模型
+        # 如果不加 detach，虽然外面有 no_grad，但显式 detach 逻辑更清晰
+        e_loss_per_sample = torch.mean((pred.detach() - target)**2, dim=(1, 2))
+        
+        # 2. 计算 Target 核矩阵
         K_yy = kernel_func(target_flat, target_flat, gamma)
-    
-    # 开启梯度上下文 (仅针对 alpha)
-    with torch.enable_grad():
-        for _ in range(inner_steps):
-            optimizer.zero_grad()
-            # 尝试用核函数的线性组合拟合误差
-            fitted_error = torch.mv(K_yy, alpha)
-            loss_fit = torch.mean((e_loss_per_sample - fitted_error)**2)
-            loss_fit.backward()
-            optimizer.step()
-    
-    # 3. 选择 Anchors (Top-J)
-    with torch.no_grad():
-        # 确保 J 不超过 Batch Size
+
+        # 3. 计算 Alpha
+        if solver_type == 'exact':
+            # 闭式解：直接解线性方程组
+            K_reg = K_yy + reg * torch.eye(B, device=pred.device)
+            # unsqueeze/squeeze 是为了匹配矩阵乘法维度
+            alpha = torch.linalg.solve(K_reg, e_loss_per_sample.unsqueeze(1)).squeeze()
+        else:
+            # 迭代解：需要局部梯度，但不需要模型梯度
+            with torch.enable_grad():
+                alpha = torch.full((B,), 1./B, device=pred.device, requires_grad=True)
+                if optim_type == 'adam':
+                    optimizer = torch.optim.Adam([alpha], lr=inner_lr)
+                else:
+                    optimizer = torch.optim.SGD([alpha], lr=inner_lr)
+                
+                for _ in range(inner_steps):
+                    optimizer.zero_grad()
+                    fitted_error = torch.mv(K_yy, alpha) # K_yy 是 constant
+                    loss_fit = torch.mean((e_loss_per_sample - fitted_error)**2)
+                    loss_fit.backward()
+                    optimizer.step()
+
+        # 4. 选择 Top-J 困难样本索引
         actual_J = min(J, B)
-        # alpha 绝对值最大的索引即为困难样本索引
         _, topj_indices = torch.topk(torch.abs(alpha), k=actual_J)
-        # 这些 Anchors 定义了 RKHS 中我们最关心的投影方向
-        target_anchors = target_flat[topj_indices] # [J, T*D]
+        target_anchors = target_flat[topj_indices] # [J, D_flat]
 
     # 4. 计算投影差异
     pred_proj = kernel_func(pred_flat, target_anchors, gamma)     # [B, J]
