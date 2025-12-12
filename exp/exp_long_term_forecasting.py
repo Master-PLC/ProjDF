@@ -6,6 +6,7 @@ import warnings
 from copy import deepcopy
 import numpy as np
 import torch.nn as nn
+import torch.nn.functional as F
 from tslearn.metrics import dtw as dtw2, dtw_limited_warping_length
 
 from exp.exp_basic import Exp_Basic
