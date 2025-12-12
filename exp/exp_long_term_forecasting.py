@@ -308,7 +308,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         kwargs = {
                             'kernel_type': self.args.kernel_type, 'gamma': self.args.gamma, 'J': self.args.J,
                             'inner_lr': self.args.meta_lr, 'inner_steps': self.args.meta_inner_steps, 'optim_type': self.args.meta_optim_type,
-                            'reg': self.args.reg_sk, 'solver_type': self.args.solver_type, 'C': self.args.C,
+                            'reg': self.args.reg_sk, 'solver_type': self.args.solver_type
                         }
                         if self.args.auxi_type == "akb":
                             loss_auxi = akb_loss(outputs, batch_y, **kwargs)
@@ -333,6 +333,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         loss_auxi = (loss_auxi.abs()**2).mean() if self.args.module_first else (loss_auxi**2).mean().abs()
                     elif self.args.auxi_loss == "None":
                         pass
+                    elif self.args.auxi_loss == "AKB":
+                        loss_auxi = torch.mean(loss_auxi, dim=0)
+                        loss_auxi = F.relu(loss_auxi - self.args.C) + F.relu(-loss_auxi - self.args.C)
+                        loss_auxi = loss_auxi.sum()
                     else:
                         raise NotImplementedError
 

@@ -25,7 +25,7 @@ def gaussian_kernel(X, Y, gamma=1.0):
     squared_dist = X_norm_sq + Y_norm_sq.T - 2.0 * torch.mm(X, Y.T)
     
     # 防止数值下溢
-    squared_dist = torch.clamp(squared_dist, min=0.0)
+    squared_dist = torch.clamp(squared_dist, min=1e-8)
     return torch.exp(-squared_dist / dim * gamma)
 
 def exponential_kernel(X, Y, gamma=1.0):
@@ -57,7 +57,7 @@ KERNEL_MAP = {
     'exp': exponential_kernel
 }
 
-def akb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inner_steps=3, optim_type='adam', solver_type='exact', reg=1e-3, C=0.01):
+def akb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inner_steps=3, optim_type='adam', solver_type='exact', reg=1e-3):
     """
     Adaptive Kernel Balancing (AKB) Loss Calculation Function.
     
@@ -115,11 +115,8 @@ def akb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inn
     # 4. 计算投影差异
     pred_proj = kernel_func(pred_flat, target_anchors, gamma)     # [B, J]
     target_proj = kernel_func(target_flat, target_anchors, gamma) # [B, J]
-    
-    diff = torch.mean(pred_proj - target_proj, dim=0)
-    loss = F.relu(diff - C) + F.relu(-diff - C)
-    loss = loss.sum()
-    return loss
+
+    return pred_proj - target_proj
 
 
 def wkb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inner_steps=3, optim_type='adam'):
