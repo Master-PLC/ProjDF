@@ -338,6 +338,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         loss_auxi = torch.mean(loss_auxi, dim=0)
                         loss_auxi = F.relu(loss_auxi - self.args.C) + F.relu(-loss_auxi - self.args.C)
                         loss_auxi = loss_auxi.sum()
+                    elif self.args.auxi_loss == "AKB2":
+                        loss_auxi = torch.mean(loss_auxi, dim=0)
+                        loss_auxi = loss_auxi.abs().sum()
                     else:
                         raise NotImplementedError
 
