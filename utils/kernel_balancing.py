@@ -3,7 +3,7 @@ import torch
 from math import sqrt
 import torch.nn.functional as F
 
-def gaussian_kernel(X, Y, gamma=1.0):
+def gaussian_kernel(X, Y, gamma=1.0, normed=1):
     """
     高斯核函数 (Gaussian RBF Kernel)
     Formula: K(x, y) = exp(-||x-y||^2 * gamma)
@@ -26,9 +26,11 @@ def gaussian_kernel(X, Y, gamma=1.0):
     
     # 防止数值下溢
     squared_dist = torch.clamp(squared_dist, min=1e-8)
-    return torch.exp(-squared_dist / dim * gamma)
+    if normed:
+        gamma = gamma / dim
+    return torch.exp(-squared_dist * gamma)
 
-def exponential_kernel(X, Y, gamma=1.0):
+def exponential_kernel(X, Y, gamma=1.0, normed=1):
     """
     指数核函数 (Exponential / Laplacian Kernel)
     Formula: K(x, y) = exp(-||x-y|| * gamma)
@@ -49,7 +51,9 @@ def exponential_kernel(X, Y, gamma=1.0):
     
     # 限制最小值为 1e-8 防止 sqrt(0) 导致梯度 NaN
     dist = torch.sqrt(torch.clamp(squared_dist, min=1e-8))
-    return torch.exp(-dist / sqrt(dim) * gamma)
+    if normed:
+        gamma = gamma / sqrt(dim)
+    return torch.exp(-dist * gamma)
 
 # 核函数映射表
 KERNEL_MAP = {
@@ -57,7 +61,7 @@ KERNEL_MAP = {
     'exp': exponential_kernel
 }
 
-def akb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inner_steps=3, optim_type='adam', solver_type='exact', reg=1e-3):
+def akb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inner_steps=3, optim_type='adam', solver_type='exact', reg=1e-3, normed=1):
     """
     Adaptive Kernel Balancing (AKB) Loss Calculation Function.
     
@@ -83,7 +87,7 @@ def akb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inn
         e_loss_per_sample = torch.mean((pred.detach() - target)**2, dim=(1, 2))
         
         # 2. 计算 Target 核矩阵
-        K_yy = kernel_func(target_flat, target_flat, gamma)
+        K_yy = kernel_func(target_flat, target_flat, gamma, normed=normed)
 
         # 3. 计算 Alpha
         if solver_type == 'exact':
@@ -113,8 +117,8 @@ def akb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inn
         target_anchors = target_flat[topj_indices] # [J, D_flat]
 
     # 4. 计算投影差异
-    pred_proj = kernel_func(pred_flat, target_anchors, gamma)     # [B, J]
-    target_proj = kernel_func(target_flat, target_anchors, gamma) # [B, J]
+    pred_proj = kernel_func(pred_flat, target_anchors, gamma, normed=normed)     # [B, J]
+    target_proj = kernel_func(target_flat, target_anchors, gamma, normed=normed) # [B, J]
 
     return pred_proj - target_proj
 
