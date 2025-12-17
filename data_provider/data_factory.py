@@ -128,6 +128,7 @@ def data_provider(args, flag, shuffle=None):
             align_type=args.align_type,
             cycle=args.cycle,
             load_from_disk=args.load_from_disk,
+            time_feature_types=args.time_feature_types
         )
         print(flag, len(data_set))
         data_loader = DataLoader(

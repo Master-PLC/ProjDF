@@ -87,6 +87,14 @@ class WeekOfYear(TimeFeature):
         return (index.isocalendar().week - 1) / 52.0 - 0.5
 
 
+class SeasonOfYear(TimeFeature):
+    """Season of year encoded as value between [-0.5, 0.5]"""
+
+    def __call__(self, index: pd.DatetimeIndex) -> np.ndarray:
+        #return (index.month // 3) / 3.0 - 0.5
+        return (((index.month // 3) + 3) % 4) / 3.0 - 0.5
+
+
 def time_features_from_frequency_str(freq_str: str) -> List[TimeFeature]:
     """
     Returns a list of time features that will be appropriate for the given frequency string.
@@ -146,3 +154,7 @@ def time_features_from_frequency_str(freq_str: str) -> List[TimeFeature]:
 
 def time_features(dates, freq='h'):
     return np.vstack([feat(dates) for feat in time_features_from_frequency_str(freq)])
+
+
+def time_features_with_types(dates, time_feature_types=['HourOfDay']):
+    return np.vstack([eval(feat)()(dates) for feat in time_feature_types])

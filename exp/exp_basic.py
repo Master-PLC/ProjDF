@@ -152,7 +152,7 @@ class Exp_Basic(object):
             batch_x = batch_x[:, :, -self.enc_in:]
             batch_y = batch_y[:, :, -self.dec_in:]
 
-        if ('PEMS' in self.args.data or 'SRU' in self.args.data) and self.args.model not in ['TiDE']:
+        if ('PEMS' in self.args.data or 'SRU' in self.args.data) and self.args.model not in ['TiDE', 'CFPT']:
             batch_x_mark = None
             batch_y_mark = None
         else:

@@ -303,6 +303,28 @@ if __name__ == '__main__':
     parser.add_argument('--C', type=float, default=0.01, help='C')
     parser.add_argument('--solver_type', type=str, default='exact', help='solver type')
 
+    # MoU
+    parser.add_argument('--conv_stride', type=int, default=16, help="stride of conv")
+    parser.add_argument('--conv_kernel_size', type=int, default=16, help="kernel size of conv")
+    parser.add_argument('--K', type=int, default=4, help='kernel num of dynamic conv')
+    parser.add_argument('--entype', type=str, default='w', help='encoding type of data space')
+    parser.add_argument('--postype', type=str, default='w', help='encoding type of position')
+    parser.add_argument('--ltencoder', type=str, default='tf', help="long-term dependency encoder type:['tf', 'gnn', 'mamba']")
+    parser.add_argument('--num_x', type=int, default=4, help='num of experts')
+    parser.add_argument('--d_state', type=int, default=21, help="d_state of mamba")
+    parser.add_argument('--dps', action=EvalAction, default=[0.2, 0.2, 0.2, 0.0, 0.2], help='dropout list for encoder')
+    parser.add_argument('--expand', type=int, default=2, help="expansion of hidden ffn layer")
+
+    # TimeBase
+    parser.add_argument('--use_period_norm', type=int, default=1, help='norm')
+    parser.add_argument('--basis_num', type=int, default=6, help='basis num')
+
+    # CFPT
+    parser.add_argument('--time_feature_types', action=EvalAction,
+                        default=None, help='features for time feature embedding')
+    parser.add_argument('--rda', type=int, default=4)
+    parser.add_argument('--rdb', type=int, default=1)
+
     args = parser.parse_args()
 
     fix_seed = args.fix_seed

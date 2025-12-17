@@ -9,6 +9,7 @@
 # pip install https://data.pyg.org/whl/torch-2.4.0%2Bcu118/torch_scatter-2.1.2%2Bpt24cu118-cp310-cp310-linux_x86_64.whl
 # pip install https://data.pyg.org/whl/torch-2.4.0%2Bcu118/torch_sparse-0.6.18%2Bpt24cu118-cp310-cp310-linux_x86_64.whl
 # pip install https://data.pyg.org/whl/torch-2.4.0%2Bcu118/torch_spline_conv-1.2.2%2Bpt24cu118-cp310-cp310-linux_x86_64.whl
+# pip install mamba-ssm==2.2.4 --no-build-isolation
 # pip install -r requirements.txt
 #####################
 
