@@ -79,13 +79,15 @@ def akb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inn
     B = pred.size(0)
     pred_flat = pred.reshape(B, -1)
     target_flat = target.reshape(B, -1)
+    actual_J = min(J, B)
 
     with torch.no_grad():
         # 1. 计算拟合目标
         # 注意：这里 pred 只是用来计算误差值，不需要传回梯度给模型
         # 如果不加 detach，虽然外面有 no_grad，但显式 detach 逻辑更清晰
-        e_loss_per_sample = torch.mean((pred.detach() - target)**2, dim=(1, 2))
-        
+        if solver_type in ['exact', 'optim']:
+            e_loss_per_sample = torch.mean((pred.detach() - target)**2, dim=(1, 2))
+
         # 2. 计算 Target 核矩阵
         K_yy = kernel_func(target_flat, target_flat, gamma, normed=normed)
 
@@ -95,7 +97,7 @@ def akb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inn
             K_reg = K_yy + reg * torch.eye(B, device=pred.device)
             # unsqueeze/squeeze 是为了匹配矩阵乘法维度
             alpha = torch.linalg.solve(K_reg, e_loss_per_sample.unsqueeze(1)).squeeze()
-        else:
+        elif solver_type == 'optim':
             # 迭代解：需要局部梯度，但不需要模型梯度
             with torch.enable_grad():
                 alpha = torch.full((B,), 1./B, device=pred.device, requires_grad=True)
@@ -110,9 +112,14 @@ def akb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inn
                     loss_fit = torch.mean((e_loss_per_sample - fitted_error)**2)
                     loss_fit.backward()
                     optimizer.step()
+        elif solver_type == 'kdiff':
+            K_py = kernel_func(pred_flat, target_flat, gamma, normed=normed)
+            # 这里的 dim=0 表示对“行”求平均，即计算所有 Pred 样本在某个 Target 样本点的平均核值
+            mean_emb_pred = torch.mean(K_py, dim=0) # [B]
+            mean_emb_target = torch.mean(K_yy, dim=0) # [B]
+            alpha = mean_emb_pred - mean_emb_target
 
         # 4. 选择 Top-J 困难样本索引
-        actual_J = min(J, B)
         _, topj_indices = torch.topk(torch.abs(alpha), k=actual_J)
         target_anchors = target_flat[topj_indices] # [J, D_flat]
 
