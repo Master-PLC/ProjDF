@@ -100,11 +100,13 @@ class Exp_Basic(object):
         data_set, data_loader = data_provider(self.args, flag, shuffle=shuffle)
         return data_set, data_loader
 
-    def _select_optimizer(self, model=None, lr=None, optim_type=None):
+    def _select_optimizer(self, model=None, lr=None, optim_type=None, l2_reg=None):
         if model is None:
             model = self.model
         if lr is None:
             lr = self.args.learning_rate
+        if l2_reg is None:
+            l2_reg = self.args.l2_reg
         if optim_type is None:
             optim_type = self.args.optim_type
         if optim_type == 'adam':
@@ -115,7 +117,7 @@ class Exp_Basic(object):
             optim_class = optim.SGD
         elif optim_type == 'rmsprop':
             optim_class = optim.RMSprop
-        model_optim = optim_class(model.parameters(), lr=lr)
+        model_optim = optim_class(model.parameters(), lr=lr, weight_decay=l2_reg)
         return model_optim
 
     def _select_criterion(self, loss_type=None):

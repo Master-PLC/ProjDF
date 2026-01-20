@@ -113,6 +113,7 @@ if __name__ == '__main__':
     parser.add_argument('--test_batch_size', type=int, default=1, help='batch size of test input data')
     parser.add_argument('--patience', type=int, default=3, help='early stopping patience')
     parser.add_argument('--learning_rate', type=float, default=0.0001, help='optimizer learning rate')
+    parser.add_argument('--l2_reg', type=float, default=0.0, help='l2 regularization')
     parser.add_argument('--des', type=str, default='test', help='exp description')
     parser.add_argument('--loss', type=str, default='MSE', help='loss function')
     parser.add_argument('--lradj', action=EvalAction, default='type1', help='adjust learning rate')

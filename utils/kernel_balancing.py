@@ -62,16 +62,6 @@ KERNEL_MAP = {
 }
 
 def akb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inner_steps=3, optim_type='adam', solver_type='exact', reg=1e-3, normed=1):
-    """
-    Adaptive Kernel Balancing (AKB) Loss Calculation Function.
-    
-    该函数执行以下步骤：
-    1. 计算样本级的重构误差。
-    2. 执行内层循环优化，寻找能解释这些误差的样本权重 alpha。
-    3. 根据 alpha 选出 Top-J 个"困难样本"作为 Anchor。
-    4. 计算预测值和真实值在这些 Anchor 上的核投影差异。
-    """
-    
     # 1. 检查并获取核函数
     if kernel_type not in KERNEL_MAP: raise ValueError(f"Unknown kernel: {kernel_type}")
     kernel_func = KERNEL_MAP[kernel_type]
@@ -83,8 +73,6 @@ def akb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inn
 
     with torch.no_grad():
         # 1. 计算拟合目标
-        # 注意：这里 pred 只是用来计算误差值，不需要传回梯度给模型
-        # 如果不加 detach，虽然外面有 no_grad，但显式 detach 逻辑更清晰
         if solver_type in ['exact', 'optim']:
             e_loss_per_sample = torch.mean((pred.detach() - target)**2, dim=(1, 2))
 
