@@ -16,6 +16,7 @@ from utils.dpp_loss import dpp_loss
 from utils.dtw_cuda import DTW
 from utils.fft_ot import cal_wasserstein
 from utils.fourier_koopman import fourier_loss
+from utils.gdtw_cuda import GromovDTW
 from utils.kernel_balancing import akb_loss, wkb_loss, rkb_loss
 from utils.ldtw_cuda import LDTW
 from utils.ot_dist import *
@@ -92,16 +93,21 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         criterion = self._select_criterion()
         if self.args.auxi_mode == 'soft_dtw':
             assert self.device != 'cpu' and self.device != torch.device('cpu'), "SoftDTW only supports GPU"
-            sdtw = SoftDTW(use_cuda=True, gamma=0.1)
+            sdtw = SoftDTW(use_cuda=True, gamma=self.args.gamma, bandwidth=self.args.bandwidth)
         elif self.args.auxi_mode == 'dtw':
             assert self.device != 'cpu' and self.device != torch.device('cpu'), "DTW only supports GPU"
-            dtw = DTW(use_cuda=True, bandwidth=0.1)
+            dtw = DTW(use_cuda=True, bandwidth=self.args.bandwidth)
         elif self.args.auxi_mode == 'ldtw2':
             assert self.device != 'cpu' and self.device != torch.device('cpu'), "LDTW only supports GPU"
             ldtw = LDTW(use_cuda=True, bandwidth=0.1, max_length=self.args.warping_length)
         elif self.args.auxi_mode == 'dilate_cuda':
             assert self.device != 'cpu' and self.device != torch.device('cpu'), "DILATE only supports GPU"
-            dilate_cuda = DilateLossCUDA(alpha=self.args.dilate_alpha, gamma=self.args.gamma, bandwidth=0)
+            dilate_cuda = DilateLossCUDA(alpha=self.args.dilate_alpha, gamma=self.args.gamma, bandwidth=self.args.bandwidth)
+        elif self.args.auxi_mode == 'gdtw':
+            gdtw = GromovDTW(
+                max_iter=self.args.max_iter, gamma=self.args.gamma, solver='soft', bandwidth=self.args.bandwidth,
+                tol=self.args.stopThr, device=self.device
+            )
 
         for epoch in range(self.args.train_epochs):
             self.epoch = epoch + 1
@@ -304,6 +310,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
                     elif self.args.auxi_mode == "dilate_cuda":
                         loss_auxi = dilate_cuda(outputs, batch_y)
+
+                    elif self.args.auxi_mode == "gdtw":
+                        loss_auxi = gdtw(outputs, batch_y)
                     
                     elif self.args.auxi_mode == "kernel_balancing":
                         kwargs = {

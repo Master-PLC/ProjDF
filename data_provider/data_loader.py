@@ -1170,6 +1170,32 @@ class Dataset_PEMS_PCA(Dataset_PEMS):
         print(f"PCA weights shape: {self.weights.shape}")
 
 
+class Dataset_PEMS_Fourier(Dataset_PEMS):
+    def __init__(
+        self, root_path, flag='train', size=None, features='S', data_path='ETTh1.csv',
+        target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None, 
+        add_noise=False, noise_amp=0.1, noise_freq_percentage=0.05, noise_seed=2023, 
+        noise_type='sin', data_percentage=1., num_freqs=16, cycle=None, time_feature_types=None, **kwargs
+    ):
+        super().__init__(
+            root_path, flag, size, features, data_path, target, scale, timeenc, freq, 
+            add_noise, cycle, time_feature_types, **kwargs
+        )
+
+        self.fourier_fit(num_freqs)
+
+    def fourier_fit(self, num_freqs=10):
+        if self.set_type != 0:
+            self.freqs = None
+            return
+
+        print("Fitting fourier ...")
+        f = fourier(num_freqs=num_freqs)
+        f.fft(self.data_x)
+        self.freqs = f.freqs
+        print(f"Fourier freqs: {self.freqs}")
+
+
 class Dataset_PEMS_CCA(Dataset_PEMS):
     def __init__(
         self, root_path, flag='train', size=None, features='S', data_path='ETTh1.csv',

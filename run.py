@@ -325,6 +325,8 @@ if __name__ == '__main__':
                         default=None, help='features for time feature embedding')
     parser.add_argument('--rda', type=int, default=4)
     parser.add_argument('--rdb', type=int, default=1)
+    parser.add_argument('--max_iter', type=int, default=10)
+    parser.add_argument('--bandwidth', type=float, default=0.)
 
     args = parser.parse_args()
 
