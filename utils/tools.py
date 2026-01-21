@@ -296,9 +296,10 @@ class LocalBufferWriter:
         
         # 2. 获取 RGB 数据 (H, W, 3)
         # 注意：frombuffer 拿出来是 flat 的，需要 reshape
-        data = np.frombuffer(figure.canvas.tostring_rgb(), dtype=np.uint8)
+        data = np.frombuffer(figure.canvas.tostring_argb(), dtype=np.uint8)
         w, h = figure.canvas.get_width_height()
-        data = data.reshape((h, w, 3))
+        data = data.reshape((h, w, 4))
+        data = data[:, :, 1:4]
         
         # 3. 存入列表 (为了节省空间，建议在这里 copy 一份，防止引用问题)
         self.data['figures'][tag]['steps'].append(step)
