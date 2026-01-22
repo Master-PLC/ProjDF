@@ -444,7 +444,7 @@ class Exp_Long_Term_Forecast_META_ML3(Exp_Basic):
     def train(self, setting):
         train_data, train_loader = self._get_data(flag='train')
         support_loader_list, query_loader_list = self.initialize_meta_tasks(train_data)
-        vali_data, vali_loader = self._get_data(flag='val')
+        vali_data, vali_loader = self._get_data(flag='val' if 'm5' not in self.args.data else 'test')
 
         path = os.path.join(self.args.checkpoints, setting)
         os.makedirs(path, exist_ok=True)
