@@ -175,6 +175,12 @@ def akb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inn
     target_flat = target.reshape(B, -1)
     actual_J = min(J, B)
 
+    if actual_J == B:
+        target_anchors = target_flat
+        pred_proj = kernel_func(pred_flat, target_anchors, gamma, normed=normed)     # [B, J]
+        target_proj = kernel_func(target_flat, target_anchors, gamma, normed=normed) # [B, J]
+        return pred_proj - target_proj
+
     with torch.no_grad():
         # 1. 计算拟合目标
         if solver_type in ['exact', 'optim']:
