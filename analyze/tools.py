@@ -15,6 +15,11 @@ import seaborn as sns
 import torch
 import yaml
 import tarfile
+
+try:
+    from yaml import CLoader as Loader
+except ImportError:
+    from yaml import Loader
 from matplotlib.backends.backend_pdf import PdfPages
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
@@ -34,6 +39,11 @@ def timing_decorator(func):
         end_time = time.time()
         return {"result": result, "time": end_time - start_time}
     return wrapper
+
+
+def load_yaml_fast(path):
+    with open(path, 'r') as f:
+        return yaml.load(f, Loader=Loader)
 
 
 def load_npy(path):
