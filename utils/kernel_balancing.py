@@ -55,11 +55,115 @@ def exponential_kernel(X, Y, gamma=1.0, normed=1):
         gamma = gamma / sqrt(dim)
     return torch.exp(-dist * gamma)
 
+
+def linear_kernel(X, Y, gamma=1.0, normed=1):
+    """
+    带缩放的线性核
+    K(x,y) = gamma * x^T y
+    """
+    if X.ndim > 2: X = X.reshape(X.size(0), -1)
+    if Y.ndim > 2: Y = Y.reshape(Y.size(0), -1)
+    dim = X.size(1)
+    g = gamma / dim if normed else gamma
+    return g * torch.mm(X, Y.T)
+
+
+def polynomial_kernel(X, Y, gamma=1.0, normed=1, degree=3, coef0=1.0):
+    """
+    多项式核 (Polynomial Kernel)
+    K(x,y) = (gamma * x^T y + coef0)^degree
+    """
+    if X.ndim > 2: X = X.reshape(X.size(0), -1)
+    if Y.ndim > 2: Y = Y.reshape(Y.size(0), -1)
+    dim = X.size(1)
+    g = gamma
+    if normed:
+        g = gamma / dim
+    return (g * torch.mm(X, Y.T) + coef0) ** degree
+
+
+def sigmoid_kernel(X, Y, gamma=1.0, normed=1, coef0=0.0):
+    """
+    Sigmoid 核 (tanh kernel)
+    K(x,y) = tanh(gamma * x^T y + coef0)
+    """
+    if X.ndim > 2: X = X.reshape(X.size(0), -1)
+    if Y.ndim > 2: Y = Y.reshape(Y.size(0), -1)
+    dim = X.size(1)
+    g = gamma
+    if normed:
+        g = gamma / dim
+    return torch.tanh(g * torch.mm(X, Y.T) + coef0)
+
+
+def cosine_kernel(X, Y, gamma=1.0, normed=1, eps=1e-8):
+    """
+    Cosine kernel with scaling
+    K(x,y) = gamma * cos(x,y)
+    """
+    if X.ndim > 2: X = X.reshape(X.size(0), -1)
+    if Y.ndim > 2: Y = Y.reshape(Y.size(0), -1)
+    # normed 对 cosine 本身没必要；这里让 gamma 按维度缩放以保持一致接口习惯
+    dim = X.size(1)
+    g = gamma / dim if normed else gamma
+
+    Xn = X / (X.norm(dim=1, keepdim=True) + eps)
+    Yn = Y / (Y.norm(dim=1, keepdim=True) + eps)
+    return g * torch.mm(Xn, Yn.T)
+
+
+def cauchy_kernel(X, Y, gamma=1.0, normed=1):
+    """
+    Cauchy 核
+    K(x,y) = 1 / (1 + gamma * ||x-y||^2)
+    """
+    if X.ndim > 2: X = X.reshape(X.size(0), -1)
+    if Y.ndim > 2: Y = Y.reshape(Y.size(0), -1)
+    dim = X.size(1)
+
+    X_norm_sq = (X**2).sum(1).view(-1, 1)
+    Y_norm_sq = (Y**2).sum(1).view(-1, 1)
+    squared_dist = X_norm_sq + Y_norm_sq.T - 2.0 * torch.mm(X, Y.T)
+    squared_dist = torch.clamp(squared_dist, min=1e-8)
+
+    g = gamma
+    if normed:
+        g = gamma / dim
+    return 1.0 / (1.0 + g * squared_dist)
+
+
+def rational_quadratic_kernel(X, Y, gamma=1.0, normed=1, alpha=1.0):
+    """
+    Rational Quadratic 核
+    K = (1 + (gamma * ||x-y||^2) / (2*alpha))^{-alpha}
+    """
+    if X.ndim > 2: X = X.reshape(X.size(0), -1)
+    if Y.ndim > 2: Y = Y.reshape(Y.size(0), -1)
+    dim = X.size(1)
+
+    X_norm_sq = (X**2).sum(1).view(-1, 1)
+    Y_norm_sq = (Y**2).sum(1).view(-1, 1)
+    squared_dist = X_norm_sq + Y_norm_sq.T - 2.0 * torch.mm(X, Y.T)
+    squared_dist = torch.clamp(squared_dist, min=1e-8)
+
+    g = gamma
+    if normed:
+        g = gamma / dim
+    return (1.0 + (g * squared_dist) / (2.0 * alpha)) ** (-alpha)
+
+
 # 核函数映射表
 KERNEL_MAP = {
     'gau': gaussian_kernel,
-    'exp': exponential_kernel
+    'exp': exponential_kernel,
+    'lin': linear_kernel,
+    'poly': polynomial_kernel,
+    'sig': sigmoid_kernel,
+    'cos': cosine_kernel,
+    'cau': cauchy_kernel,
+    'rq': rational_quadratic_kernel
 }
+
 
 def akb_loss(pred, target, kernel_type='gau', gamma=0.1, J=3, inner_lr=0.05, inner_steps=3, optim_type='adam', solver_type='exact', reg=1e-3, normed=1):
     # 1. 检查并获取核函数
