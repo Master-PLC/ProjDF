@@ -328,6 +328,9 @@ if __name__ == '__main__':
     parser.add_argument('--max_iter', type=int, default=10)
     parser.add_argument('--bandwidth', type=float, default=0.)
 
+    # DBLoss
+    parser.add_argument('--db_alpha', type=float, default=0.3, help="EMA smoothing coefficient for DBLoss decomposition")
+
     args = parser.parse_args()
 
     fix_seed = args.fix_seed

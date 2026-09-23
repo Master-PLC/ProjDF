@@ -41,11 +41,6 @@ def timing_decorator(func):
     return wrapper
 
 
-def load_yaml_fast(path):
-    with open(path, 'r') as f:
-        return yaml.load(f, Loader=Loader)
-
-
 def load_npy(path):
     return np.load(path)
 
@@ -61,6 +56,11 @@ def load_yaml_as_df(path):
         data = yaml.safe_load(file)
     df = pd.json_normalize(data)
     return df
+
+
+def load_yaml_fast(path):
+    with open(path, 'r') as f:
+        return yaml.load(f, Loader=Loader)
 
 
 def exist_metric(exp_dir):

@@ -10,19 +10,25 @@
 # pip install https://data.pyg.org/whl/torch-2.4.0%2Bcu118/torch_sparse-0.6.18%2Bpt24cu118-cp310-cp310-linux_x86_64.whl
 # pip install https://data.pyg.org/whl/torch-2.4.0%2Bcu118/torch_spline_conv-1.2.2%2Bpt24cu118-cp310-cp310-linux_x86_64.whl
 # pip install mamba-ssm==2.2.4 --no-build-isolation
+# pip install local_attention cca-zoo[probabilistic,visualisation,deep] hyper_connections product_key_memory colt5_attention --no-deps
+# pip install transformers==4.30
 # pip install -r requirements.txt
 #####################
 
-cca-zoo[probabilistic,visualisation,deep]
+axial_positional_embedding
+# cca-zoo[probabilistic,visualisation,deep]
+CRPS
 cuml-cu11
+Cython
 einops
 h5py
 ipykernel
 isort
 jaxlib
-lightning
+# lightning
 matplotlib
 numba
+# numpy<2.0.0
 openpyxl
 pandas
 patool
@@ -31,7 +37,7 @@ pytorch-lightning
 pyrpca
 pyyaml
 PyWavelets
-reformer-pytorch
+# reformer-pytorch==1.4.4
 robustica
 scikit-learn
 scikit-learn-intelex
@@ -45,6 +51,7 @@ tensorboard
 tensorboard-plugin-profile
 tensorly
 thop
+timm
 torchinfo
 torch_dct
 torch-geometric

@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from tslearn.metrics import dtw as dtw2, dtw_limited_warping_length
 
 from exp.exp_basic import Exp_Basic
+from utils.db_loss import DBLoss
 from utils.dilate_loss import dilate_loss
 from utils.dilate_loss_cuda import DilateLossCUDA
 from utils.dpp_loss import dpp_loss
@@ -108,6 +109,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 max_iter=self.args.max_iter, gamma=self.args.gamma, solver='soft', bandwidth=self.args.bandwidth,
                 tol=self.args.stopThr, device=self.device
             )
+        elif self.args.auxi_mode == 'db':
+            db = DBLoss(alpha=self.args.db_alpha, beta=self.args.beta).to(self.device)
 
         for epoch in range(self.args.train_epochs):
             self.epoch = epoch + 1
@@ -328,6 +331,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                             loss_auxi = rkb_loss(outputs, batch_y, **kwargs)
                         else:
                             raise NotImplementedError
+
+                    elif self.args.auxi_mode == "db":
+                        loss_auxi = db(outputs, batch_y)
 
                     else:
                         raise NotImplementedError
