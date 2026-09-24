@@ -330,6 +330,7 @@ if __name__ == '__main__':
 
     # DBLoss
     parser.add_argument('--db_alpha', type=float, default=0.3, help="EMA smoothing coefficient for DBLoss decomposition")
+    parser.add_argument('--db_beta', type=float, default=0.3, help='db_beta')
 
     args = parser.parse_args()
 

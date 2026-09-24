@@ -110,7 +110,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 tol=self.args.stopThr, device=self.device
             )
         elif self.args.auxi_mode == 'db':
-            db = DBLoss(alpha=self.args.db_alpha, beta=self.args.beta).to(self.device)
+            db = DBLoss(alpha=self.args.db_alpha, beta=self.args.db_beta).to(self.device)
 
         for epoch in range(self.args.train_epochs):
             self.epoch = epoch + 1
